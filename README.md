@@ -294,7 +294,10 @@ Snap correctly handles high-DPI displays. The canvas renders at physical pixel r
 
 ## Built By
 
-[Adjective LLC](https://adjective.us)
+[Rob Murtha — Adjective LLC
+
+Contributors
+Alec Lucas — macOS port](https://adjective.us)
 
 ## License
 
