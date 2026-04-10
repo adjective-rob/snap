@@ -135,10 +135,12 @@ For detailed setup instructions, see **[SETUP.md](SETUP.md)**.
 
 ## macOS Quick Install
 
+```bash
 # 1) Build app
+make build
 
 # 2) Install into /Applications
-cp -R ~/<location of snap>/app/src-tauri/target/release/bundle/macos/snap.app /Applications/
+cp -R app/src-tauri/target/release/bundle/macos/snap.app /Applications/
 
 # 3) Launch
 open -a /Applications/snap.app
@@ -147,6 +149,8 @@ open -a /Applications/snap.app
 First run:
 - Press `Ctrl+Shift+S` once to trigger permission prompts.
 - Allow Screen Recording/Automation/Accessibility if asked.
+
+You can also add this to start-up to ensure it runs headless on each login. 
 
 If permissions get stuck:
 
