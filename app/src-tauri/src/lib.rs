@@ -9,15 +9,21 @@ use std::sync::Mutex;
 pub static OVERLAY_ACTIVE: AtomicBool = AtomicBool::new(false);
 pub static PRE_CAPTURED: AtomicBool = AtomicBool::new(false);
 
+// ----- Capture file path -----
+
+fn capture_temp_path() -> PathBuf {
+    std::env::temp_dir().join("snap-capture.png")
+}
+
 // ----- Screen Capture -----
 
 #[cfg(target_os = "macos")]
 pub fn capture_screen_interactive() -> Result<(), String> {
-    let path = "/tmp/snap-capture.png";
-    let _ = fs::remove_file(path);
+    let path = capture_temp_path();
+    let _ = fs::remove_file(&path);
 
     let output = Command::new("screencapture")
-        .args(["-i", "-s", path])
+        .args(["-i", "-s", path.to_str().unwrap_or("/tmp/snap-capture.png")])
         .output()
         .map_err(|e| format!("screencapture failed to launch: {}", e))?;
 
@@ -28,7 +34,7 @@ pub fn capture_screen_interactive() -> Result<(), String> {
         ));
     }
 
-    match fs::metadata(path) {
+    match fs::metadata(&path) {
         Ok(meta) if meta.len() > 0 => {
             log_event("region captured interactively");
             PRE_CAPTURED.store(true, Ordering::SeqCst);
@@ -40,18 +46,49 @@ pub fn capture_screen_interactive() -> Result<(), String> {
 
 #[tauri::command]
 fn capture_screen() -> Result<String, String> {
-    let path = "/tmp/snap-capture.png";
+    let path = capture_temp_path();
+
+    #[cfg(target_os = "windows")]
+    {
+        use screenshots::Screen;
+
+        let _ = fs::remove_file(&path);
+
+        let screens = Screen::all().map_err(|e| format!("Failed to list screens: {}", e))?;
+
+        let screen = screens
+            .iter()
+            .find(|s| s.display_info.is_primary)
+            .or_else(|| screens.first())
+            .ok_or("No screens found")?;
+
+        let image = screen
+            .capture()
+            .map_err(|e| format!("Screen capture failed: {}", e))?;
+
+        image
+            .save(&path)
+            .map_err(|e| format!("Failed to save capture: {}", e))?;
+
+        match fs::metadata(&path) {
+            Ok(meta) if meta.len() > 0 => {
+                log_event("screen captured via screenshots crate");
+                return Ok(path.to_string_lossy().to_string());
+            }
+            _ => return Err("Screen capture produced empty file".to_string()),
+        }
+    }
 
     #[cfg(target_os = "macos")]
     {
         if PRE_CAPTURED.swap(false, Ordering::SeqCst) {
-            return Ok(path.to_string());
+            return Ok(path.to_string_lossy().to_string());
         }
 
         // fallback: full-screen silent capture
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
         let output = Command::new("screencapture")
-            .args(["-x", path])
+            .args(["-x", path.to_str().unwrap_or("/tmp/snap-capture.png")])
             .output()
             .map_err(|e| format!("screencapture failed to launch: {}", e))?;
 
@@ -62,35 +99,34 @@ fn capture_screen() -> Result<String, String> {
             ));
         }
 
-        match fs::metadata(path) {
+        match fs::metadata(&path) {
             Ok(meta) if meta.len() > 0 => {
                 log_event("screen captured via screencapture");
-                return Ok(path.to_string());
+                return Ok(path.to_string_lossy().to_string());
             }
             _ => return Err("screencapture produced empty file".to_string()),
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
-    // Clean up previous capture
-    let _ = fs::remove_file(path);
-
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         // Linux: try capture tools in order of preference
+        let path_str = path.to_string_lossy().to_string();
+        let _ = fs::remove_file(&path);
+
         let methods: Vec<(&str, Vec<&str>)> = if std::env::var("WAYLAND_DISPLAY").is_ok() {
             vec![
                 // GNOME Wayland: gnome-screenshot is the most reliable
-                ("gnome-screenshot", vec!["--file", path]),
+                ("gnome-screenshot", vec!["--file", &path_str]),
                 // wlroots-based compositors (Sway, Hyprland, etc.)
-                ("grim", vec![path]),
+                ("grim", vec![&path_str]),
                 // Fallback: scrot might work via XWayland
-                ("scrot", vec!["--overwrite", path]),
+                ("scrot", vec!["--overwrite", &path_str]),
             ]
         } else {
             vec![
-                ("scrot", vec!["--overwrite", path]),
-                ("gnome-screenshot", vec!["--file", path]),
+                ("scrot", vec!["--overwrite", &path_str]),
+                ("gnome-screenshot", vec!["--file", &path_str]),
             ]
         };
 
@@ -99,10 +135,10 @@ fn capture_screen() -> Result<String, String> {
         for (tool, args) in &methods {
             match Command::new(tool).args(args).output() {
                 Ok(output) if output.status.success() => {
-                    match fs::metadata(path) {
+                    match fs::metadata(&path) {
                         Ok(meta) if meta.len() > 0 => {
                             log_event(&format!("screen captured via {}", tool));
-                            return Ok(path.to_string());
+                            return Ok(path_str.clone());
                         }
                         _ => {
                             last_error = format!("{} produced empty file", tool);
@@ -142,10 +178,21 @@ struct WindowContext {
 static PRE_CAPTURED_CONTEXT: Mutex<Option<WindowContext>> = Mutex::new(None);
 
 pub fn capture_and_store_window_context() {
+    #[cfg(target_os = "windows")]
+    {
+        let ctx = get_active_window_context_windows();
+        if let Ok(mut lock) = PRE_CAPTURED_CONTEXT.lock() {
+            *lock = Some(ctx);
+        }
+    }
+
     #[cfg(target_os = "macos")]
     {
         let ctx = get_active_window_context_macos().unwrap_or(WindowContext {
-            window_title: None, url: None, window_class: None, pid: None,
+            window_title: None,
+            url: None,
+            window_class: None,
+            pid: None,
         });
         if let Ok(mut lock) = PRE_CAPTURED_CONTEXT.lock() {
             *lock = Some(ctx);
@@ -155,6 +202,16 @@ pub fn capture_and_store_window_context() {
 
 #[tauri::command]
 fn get_active_window_context() -> Result<WindowContext, String> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(mut lock) = PRE_CAPTURED_CONTEXT.lock() {
+            if let Some(ctx) = lock.take() {
+                return Ok(ctx);
+            }
+        }
+        return Ok(get_active_window_context_windows());
+    }
+
     #[cfg(target_os = "macos")]
     {
         if let Ok(mut lock) = PRE_CAPTURED_CONTEXT.lock() {
@@ -165,7 +222,7 @@ fn get_active_window_context() -> Result<WindowContext, String> {
         return get_active_window_context_macos();
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         // Only works on X11
         if std::env::var("WAYLAND_DISPLAY").is_ok() {
@@ -208,6 +265,76 @@ fn get_active_window_context() -> Result<WindowContext, String> {
             window_class: class,
             pid,
         })
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn get_active_window_context_windows() -> WindowContext {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetClassNameW, GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW,
+        GetWindowThreadProcessId,
+    };
+
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() {
+            return WindowContext {
+                window_title: None,
+                url: None,
+                window_class: None,
+                pid: None,
+            };
+        }
+
+        // Window title
+        let title_len = GetWindowTextLengthW(hwnd);
+        let window_title = if title_len > 0 {
+            let mut buf = vec![0u16; (title_len + 1) as usize];
+            GetWindowTextW(hwnd, &mut buf);
+            buf.truncate(title_len as usize);
+            Some(String::from_utf16_lossy(&buf))
+        } else {
+            None
+        };
+
+        // Window class name (identifies the application type)
+        let mut class_buf = [0u16; 256];
+        let class_len = GetClassNameW(hwnd, &mut class_buf);
+        let window_class = if class_len > 0 {
+            Some(String::from_utf16_lossy(&class_buf[..class_len as usize]))
+        } else {
+            None
+        };
+
+        // Process ID
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+
+        // Browsers: Chrome, Edge, Firefox, Brave — infer URL from title bar
+        let is_browser = window_class
+            .as_ref()
+            .map(|c| {
+                let lower = c.to_lowercase();
+                lower.contains("chrome")
+                    || lower.contains("msedge")
+                    || lower.contains("firefox")
+                    || lower.contains("brave")
+                    || lower.contains("opera")
+            })
+            .unwrap_or(false);
+
+        let url = if is_browser {
+            window_title.clone()
+        } else {
+            None
+        };
+
+        WindowContext {
+            window_title,
+            url,
+            window_class,
+            pid: if pid > 0 { Some(pid) } else { None },
+        }
     }
 }
 
@@ -275,7 +402,7 @@ fn get_active_window_context_macos() -> Result<WindowContext, String> {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn run_xdotool(args: &[&str]) -> Option<String> {
     Command::new("xdotool")
         .args(args)
@@ -313,9 +440,10 @@ fn save_annotation(metadata_json: String, image_base64: Option<String>) -> Resul
         fs::write(&png_path, &image_bytes).map_err(|e| format!("Failed to write PNG: {}", e))?;
     } else {
         // Copy the raw screen capture — much faster, no IPC overhead
-        let capture = PathBuf::from("/tmp/snap-capture.png");
+        let capture = capture_temp_path();
         if capture.exists() {
-            fs::copy(&capture, &png_path).map_err(|e| format!("Failed to copy capture: {}", e))?;
+            fs::copy(&capture, &png_path)
+                .map_err(|e| format!("Failed to copy capture: {}", e))?;
         } else {
             return Err("No capture file found".to_string());
         }
@@ -342,8 +470,8 @@ fn save_annotation(metadata_json: String, image_base64: Option<String>) -> Resul
 
 #[tauri::command]
 fn read_capture_base64() -> Result<String, String> {
-    let path = "/tmp/snap-capture.png";
-    let bytes = fs::read(path).map_err(|e| format!("Failed to read capture: {}", e))?;
+    let path = capture_temp_path();
+    let bytes = fs::read(&path).map_err(|e| format!("Failed to read capture: {}", e))?;
     Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }
 
@@ -369,7 +497,7 @@ fn inbox_dir() -> Result<PathBuf, String> {
 pub fn log_event(msg: &str) {
     let log_dir = dirs::home_dir()
         .map(|h| h.join(".snap"))
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
+        .unwrap_or_else(|| std::env::temp_dir());
     let _ = fs::create_dir_all(&log_dir);
     let log_path = log_dir.join("snap.log");
 

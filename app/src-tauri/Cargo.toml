@@ -20,3 +20,11 @@ chrono = "0.4"
 dirs = "5"
 base64 = "0.22"
 png = "0.17"
+screenshots = "0.8"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
+] }
