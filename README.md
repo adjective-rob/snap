@@ -275,10 +275,10 @@ snap/
 | Linux X11 | `scrot` | `xdotool` (title, class, PID) | Tauri global-shortcut plugin (tray mode) |
 | Linux Wayland (GNOME) | `gnome-screenshot` | Not available | GNOME custom keybinding → `snap-trigger.sh` |
 | Linux Wayland (wlroots) | `grim` | Not available | Compositor keybinding → `snap-trigger.sh` |
-| macOS | Planned | Planned | Planned |
-| Windows | Planned | Planned | Planned |
+| macOS | `screencapture` | AppleScript (title, URL, PID) | Tauri global-shortcut plugin (tray mode) |
+| Windows | `screenshots` crate | Win32 `GetForegroundWindow` (title, class, PID) | Tauri global-shortcut plugin (tray mode) |
 
-The capture system tries tools in order of preference and falls back gracefully. On Wayland with GNOME, it tries `gnome-screenshot` first, then `grim`, then `scrot`.
+The capture system tries tools in order of preference and falls back gracefully. On Wayland with GNOME, it tries `gnome-screenshot` first, then `grim`, then `scrot`. On Windows, capture goes through the cross-platform `screenshots` crate and window context is read from the Win32 foreground window.
 
 ### HiDPI / 4K Display Support
 
@@ -301,7 +301,8 @@ Snap correctly handles high-DPI displays. The canvas renders at physical pixel r
 [Rob Murtha — Adjective LLC
 
 Contributors
-Alec Lucas — macOS port](https://adjective.us)
+Alec Lucas — macOS port
+TangoKiloA — Windows support (screen capture, window context, tray)](https://adjective.us)
 
 ## License
 
