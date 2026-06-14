@@ -18,26 +18,69 @@ impl Drop for SingleInstanceGuard {
     }
 }
 
+fn is_process_running(pid: u32) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        unsafe {
+            match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                Ok(handle) => {
+                    let mut exit_code = 0u32;
+                    let alive = GetExitCodeProcess(handle, &mut exit_code).is_ok()
+                        && exit_code == 259; // STILL_ACTIVE
+                    let _ = CloseHandle(handle);
+                    alive
+                }
+                Err(_) => false,
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 fn try_acquire_single_instance() -> Result<SingleInstanceGuard, String> {
     let home = dirs::home_dir().ok_or("Could not determine home directory")?;
     let snap_dir = home.join(".snap");
     fs::create_dir_all(&snap_dir).map_err(|e| format!("Failed to create ~/.snap: {}", e))?;
 
     let lock_path = snap_dir.join("snap-tray.lock");
-    let mut file = match OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&lock_path)
-    {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Err("another instance is already running".to_string());
-        }
-        Err(e) => return Err(format!("failed to create lock file: {}", e)),
-    };
 
-    let _ = writeln!(file, "{}", std::process::id());
-    Ok(SingleInstanceGuard { path: lock_path })
+    loop {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(mut file) => {
+                let _ = writeln!(file, "{}", std::process::id());
+                return Ok(SingleInstanceGuard { path: lock_path });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let stale = fs::read_to_string(&lock_path)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u32>().ok())
+                    .map(|pid| !is_process_running(pid))
+                    .unwrap_or(true); // unreadable or unparseable → treat as stale
+
+                if !stale {
+                    return Err("another instance is already running".to_string());
+                }
+
+                snap_lib::log_event("removing stale lock file");
+                let _ = fs::remove_file(&lock_path);
+                // loop to retry
+            }
+            Err(e) => return Err(format!("failed to create lock file: {}", e)),
+        }
+    }
 }
 
 fn main() {
@@ -46,9 +89,12 @@ fn main() {
     #[cfg(target_os = "macos")]
     let use_overlay = args.contains(&"--overlay-mode".to_string());
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let use_overlay = env::var("WAYLAND_DISPLAY").is_ok()
         || args.contains(&"--overlay-mode".to_string());
+
+    #[cfg(target_os = "windows")]
+    let use_overlay = args.contains(&"--overlay-mode".to_string());
 
     if use_overlay {
         run_overlay_mode();
@@ -137,17 +183,29 @@ fn run_tray_mode() {
                 .menu(&menu)
                 .on_menu_event(|app, event| {
                     if event.id() == "open_logs" {
-                        let home = std::env::var("HOME").unwrap_or_else(|_| String::from("/tmp"));
-                        let log_dir = format!("{}/.snap", home);
+                        let snap_dir = dirs::home_dir()
+                            .map(|h| h.join(".snap"))
+                            .unwrap_or_else(|| std::env::temp_dir());
+
+                        #[cfg(target_os = "windows")]
+                        {
+                            let _ = std::process::Command::new("explorer")
+                                .arg(&snap_dir)
+                                .spawn();
+                        }
 
                         #[cfg(target_os = "macos")]
                         {
-                            let _ = std::process::Command::new("open").arg(&log_dir).spawn();
+                            let _ = std::process::Command::new("open")
+                                .arg(&snap_dir)
+                                .spawn();
                         }
 
-                        #[cfg(not(target_os = "macos"))]
+                        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
                         {
-                            let _ = std::process::Command::new("xdg-open").arg(&log_dir).spawn();
+                            let _ = std::process::Command::new("xdg-open")
+                                .arg(&snap_dir)
+                                .spawn();
                         }
                         return;
                     }
