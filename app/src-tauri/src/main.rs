@@ -41,8 +41,14 @@ fn is_process_running(pid: u32) -> bool {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = pid;
-        false
+        // POSIX: `kill -0 <pid>` exits 0 iff the process exists and is signalable
+        // by us. No signal is actually sent. Missing `kill` or any error → treat as
+        // not running, so a genuinely stale lock still gets cleared.
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
 }
 
