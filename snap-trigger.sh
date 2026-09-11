@@ -5,6 +5,10 @@
 BINARY="$HOME/Desktop/snap/app/src-tauri/target/release/snap"
 LOCK="/tmp/snap-overlay.lock"
 LOG="$HOME/.snap/snap.log"
+# The app writes its raw capture to a fixed path in the shared /tmp. On a machine
+# with several user accounts, a leftover file owned by another user makes the
+# capture fail with "permission denied", so clean it up before and after each run.
+CAPTURE="${TMPDIR:-/tmp}/snap-capture.png"
 
 log() {
     mkdir -p "$HOME/.snap"
@@ -24,6 +28,10 @@ fi
 
 log "hotkey triggered — launching overlay"
 
+if [ -e "$CAPTURE" ] && ! rm -f "$CAPTURE" 2>/dev/null; then
+    log "WARNING: cannot remove $CAPTURE (owned by $(stat -c %U "$CAPTURE" 2>/dev/null)); capture will fail until that user removes it"
+fi
+
 # Launch the app in single-shot overlay mode
 # The app will capture screen, show overlay, save, and exit
 "$BINARY" --overlay-mode &
@@ -32,5 +40,5 @@ echo "$OVERLAY_PID" > "$LOCK"
 
 # Clean up lock when overlay exits
 wait "$OVERLAY_PID" 2>/dev/null
-rm -f "$LOCK"
+rm -f "$LOCK" "$CAPTURE"
 log "overlay closed"
