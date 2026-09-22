@@ -1,7 +1,12 @@
 const { invoke } = window.__TAURI__.core;
 const { getCurrentWindow } = window.__TAURI__.window;
 const { listen } = window.__TAURI__.event;
-import { mapCropToNative } from "./export-scale.mjs";
+import {
+  mapCropToNative,
+  fitLayout,
+  imageTransform,
+  annotationToSidecar,
+} from "./export-scale.mjs";
 
 // ----- State -----
 let currentTool = "circle";
@@ -37,17 +42,43 @@ const toolbar = document.getElementById("toolbar");
 // so all drawing coordinates use logical pixels.
 const dpr = window.devicePixelRatio || 1;
 
+// Fit the visible source region (the whole capture, or the cropped region)
+// into the window, preserving aspect ratio and centering. bgOffset/bgDraw
+// describe where that region lands in logical window pixels, and every
+// window->image coordinate conversion goes through them (see imageTransform).
+function sourceSize() {
+  return {
+    srcW: cropSrc ? cropSrc.w : backgroundImage.naturalWidth,
+    srcH: cropSrc ? cropSrc.h : backgroundImage.naturalHeight,
+  };
+}
+
 function computeBgLayout() {
   if (!backgroundImage) return;
-  const logicalW = window.innerWidth;
-  const logicalH = window.innerHeight;
-  const logicalImgW = backgroundImage.naturalWidth / dpr;
-  const logicalImgH = backgroundImage.naturalHeight / dpr;
-  const scale = Math.min(logicalW / logicalImgW, logicalH / logicalImgH, 1);
-  bgDrawW = logicalImgW * scale;
-  bgDrawH = logicalImgH * scale;
-  bgOffsetX = Math.round((logicalW - bgDrawW) / 2);
-  bgOffsetY = Math.round((logicalH - bgDrawH) / 2);
+  const layout = fitLayout({
+    ...sourceSize(),
+    winW: window.innerWidth,
+    winH: window.innerHeight,
+    dpr,
+    // A full capture is never enlarged; a cropped region is zoomed to fill.
+    allowZoom: Boolean(cropSrc),
+  });
+  bgOffsetX = layout.offsetX;
+  bgOffsetY = layout.offsetY;
+  bgDrawW = layout.drawW;
+  bgDrawH = layout.drawH;
+}
+
+// Mapping from logical window coordinates to pixels of the exported image
+// (the source region at native capture resolution) for the current layout.
+function currentImageTransform() {
+  return imageTransform({
+    ...sourceSize(),
+    offsetX: bgOffsetX,
+    offsetY: bgOffsetY,
+    drawW: bgDrawW,
+    drawH: bgDrawH,
+  });
 }
 
 function resizeCanvas() {
@@ -287,16 +318,28 @@ function selNormalized() {
 }
 
 function commitSelection(x, y, w, h) {
-  cropSrc = {
+  // Selection is in window coords over the full-capture layout; convert to
+  // capture pixels and clamp to the image (the drag may start in the letterbox).
+  const raw = {
     x: ((x - bgOffsetX) / bgDrawW) * backgroundImage.naturalWidth,
     y: ((y - bgOffsetY) / bgDrawH) * backgroundImage.naturalHeight,
     w: (w / bgDrawW) * backgroundImage.naturalWidth,
     h: (h / bgDrawH) * backgroundImage.naturalHeight,
   };
-  bgOffsetX = 0;
-  bgOffsetY = 0;
-  bgDrawW = window.innerWidth;
-  bgDrawH = window.innerHeight;
+  const clamped = mapCropToNative(raw, {
+    previewWidth: backgroundImage.naturalWidth,
+    previewHeight: backgroundImage.naturalHeight,
+    nativeWidth: backgroundImage.naturalWidth,
+    nativeHeight: backgroundImage.naturalHeight,
+  });
+  if (!clamped || clamped.w < 1 || clamped.h < 1) {
+    selStart = null;
+    selCurrent = null;
+    render();
+    return;
+  }
+  cropSrc = clamped;
+  computeBgLayout();
   selectionPhase = false;
   selStart = null;
   selCurrent = null;
@@ -305,18 +348,21 @@ function commitSelection(x, y, w, h) {
   render();
 }
 
-function renderAnnotation(a) {
-  ctx.save();
-  ctx.strokeStyle = a.color;
-  ctx.fillStyle = a.color;
-  ctx.lineWidth = a.strokeWidth || currentWidth;
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
+// Draws one annotation in logical window coordinates onto `c`. The on-screen
+// canvas and the export canvas both use this; the export canvas just has a
+// transform installed that maps window coords to image pixels.
+function renderAnnotation(a, c = ctx) {
+  c.save();
+  c.strokeStyle = a.color;
+  c.fillStyle = a.color;
+  c.lineWidth = a.strokeWidth || currentWidth;
+  c.lineCap = "round";
+  c.lineJoin = "round";
 
   switch (a.type) {
     case "circle":
-      ctx.beginPath();
-      ctx.ellipse(
+      c.beginPath();
+      c.ellipse(
         a.cx,
         a.cy,
         Math.abs(a.rx),
@@ -325,69 +371,71 @@ function renderAnnotation(a) {
         0,
         Math.PI * 2,
       );
-      ctx.stroke();
+      c.stroke();
       break;
 
     case "rect":
-      ctx.strokeRect(a.x, a.y, a.width, a.height);
+      c.strokeRect(a.x, a.y, a.width, a.height);
       // Subtle fill
-      ctx.fillStyle = a.color + "1A"; // 10% opacity
-      ctx.fillRect(a.x, a.y, a.width, a.height);
+      c.fillStyle = a.color + "1A"; // 10% opacity
+      c.fillRect(a.x, a.y, a.width, a.height);
       break;
 
     case "arrow":
-      drawArrow(a.fromX, a.fromY, a.toX, a.toY, a.color, a.strokeWidth);
+      drawArrowOn(c, a.fromX, a.fromY, a.toX, a.toY, a.color, a.strokeWidth);
       break;
 
     case "freehand":
       if (a.points.length < 2) break;
-      ctx.beginPath();
-      ctx.moveTo(a.points[0].x, a.points[0].y);
+      c.beginPath();
+      c.moveTo(a.points[0].x, a.points[0].y);
       // Smooth the path with quadratic curves for a buttery feel
       for (let i = 1; i < a.points.length - 1; i++) {
         const midX = (a.points[i].x + a.points[i + 1].x) / 2;
         const midY = (a.points[i].y + a.points[i + 1].y) / 2;
-        ctx.quadraticCurveTo(a.points[i].x, a.points[i].y, midX, midY);
+        c.quadraticCurveTo(a.points[i].x, a.points[i].y, midX, midY);
       }
       // Last point
       const last = a.points[a.points.length - 1];
-      ctx.lineTo(last.x, last.y);
-      ctx.stroke();
+      c.lineTo(last.x, last.y);
+      c.stroke();
       break;
 
-    case "text":
+    case "text": {
       const fontSize = a.fontSize || 16;
-      ctx.font = `bold ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+      c.font = `bold ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
       // Dark outline for readability on any background
-      ctx.strokeStyle = "rgba(0, 0, 0, 0.8)";
-      ctx.lineWidth = 3;
-      ctx.lineJoin = "round";
-      ctx.strokeText(a.content, a.x, a.y);
-      ctx.fillText(a.content, a.x, a.y);
+      c.strokeStyle = "rgba(0, 0, 0, 0.8)";
+      c.lineWidth = 3;
+      c.lineJoin = "round";
+      c.strokeText(a.content, a.x, a.y);
+      c.fillText(a.content, a.x, a.y);
       break;
+    }
 
-    case "marker":
+    case "marker": {
       const r = a.radius || 16;
       // Shadow for depth
-      ctx.shadowColor = "rgba(0,0,0,0.4)";
-      ctx.shadowBlur = 6;
-      ctx.shadowOffsetY = 2;
-      ctx.beginPath();
-      ctx.arc(a.x, a.y, r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.shadowColor = "transparent";
+      c.shadowColor = "rgba(0,0,0,0.4)";
+      c.shadowBlur = 6;
+      c.shadowOffsetY = 2;
+      c.beginPath();
+      c.arc(a.x, a.y, r, 0, Math.PI * 2);
+      c.fill();
+      c.shadowColor = "transparent";
       // White number
-      ctx.fillStyle = "#FFFFFF";
-      ctx.font = `bold ${r}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(String(a.number), a.x, a.y);
-      ctx.textAlign = "start";
-      ctx.textBaseline = "alphabetic";
+      c.fillStyle = "#FFFFFF";
+      c.font = `bold ${r}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+      c.textAlign = "center";
+      c.textBaseline = "middle";
+      c.fillText(String(a.number), a.x, a.y);
+      c.textAlign = "start";
+      c.textBaseline = "alphabetic";
       break;
+    }
   }
 
-  ctx.restore();
+  c.restore();
 }
 
 function drawArrowOn(c, fromX, fromY, toX, toY, color, width) {
@@ -415,30 +463,7 @@ function drawArrowOn(c, fromX, fromY, toX, toY, color, width) {
 }
 
 function drawArrow(fromX, fromY, toX, toY, color, width) {
-  const headLen = 12 + width;
-  const angle = Math.atan2(toY - fromY, toX - fromX);
-
-  ctx.strokeStyle = color;
-  ctx.lineWidth = width;
-  ctx.beginPath();
-  ctx.moveTo(fromX, fromY);
-  ctx.lineTo(toX, toY);
-  ctx.stroke();
-
-  // Arrowhead
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.moveTo(toX, toY);
-  ctx.lineTo(
-    toX - headLen * Math.cos(angle - Math.PI / 6),
-    toY - headLen * Math.sin(angle - Math.PI / 6),
-  );
-  ctx.lineTo(
-    toX - headLen * Math.cos(angle + Math.PI / 6),
-    toY - headLen * Math.sin(angle + Math.PI / 6),
-  );
-  ctx.closePath();
-  ctx.fill();
+  drawArrowOn(ctx, fromX, fromY, toX, toY, color, width);
 }
 
 // ----- Mouse events -----
@@ -848,11 +873,20 @@ async function closeOverlay() {
 
 async function save() {
   if (isSaving) return;
+  // Nothing to save until a capture is loaded (e.g. Enter pressed while the
+  // capture-failed message is showing).
+  if (!backgroundImage) return;
   isSaving = true;
 
   // Visual feedback — flash the save button
   const saveBtn = document.getElementById("btn-save");
   saveBtn.classList.add("saving");
+
+  // Everything below is expressed in exported-image pixels: the source region
+  // (whole capture or crop) at native capture resolution. The same transform
+  // positions the drawn annotations in the PNG and the coordinates in the
+  // sidecar, so an agent reading the JSON can locate things in the image.
+  const t = currentImageTransform();
 
   // Build sidecar metadata
   const metadata = {
@@ -862,205 +896,73 @@ async function save() {
       url: windowContext?.url || null,
       window_class: windowContext?.window_class || null,
       pid: windowContext?.pid || null,
+      session_type: windowContext?.session_type || null,
       display: "primary",
       resolution: [window.screen.width, window.screen.height],
+      capture_size: [backgroundImage.naturalWidth, backgroundImage.naturalHeight],
+      crop: cropSrc ? { x: cropSrc.x, y: cropSrc.y, w: cropSrc.w, h: cropSrc.h } : null,
     },
-    annotations: annotations.map((a) => {
-      switch (a.type) {
-        case "circle":
-          return {
-            type: "circle",
-            center: [a.cx, a.cy],
-            radius: [a.rx, a.ry],
-            color: a.color,
-            label: null,
-          };
-        case "rect":
-          return {
-            type: "rect",
-            position: [a.x, a.y],
-            size: [a.width, a.height],
-            color: a.color,
-            label: null,
-          };
-        case "arrow":
-          return {
-            type: "arrow",
-            from: [a.fromX, a.fromY],
-            to: [a.toX, a.toY],
-            color: a.color,
-            label: null,
-          };
-        case "freehand":
-          return {
-            type: "freehand",
-            points: a.points,
-            color: a.color,
-            label: null,
-          };
-        case "text":
-          return {
-            type: "text",
-            position: [a.x, a.y],
-            content: a.content,
-            color: a.color,
-          };
-        case "marker":
-          return {
-            type: "marker",
-            position: [a.x, a.y],
-            number: a.number,
-            color: a.color,
-          };
-        default:
-          return a;
-      }
-    }),
+    image_size: [t.exportW, t.exportH],
+    coordinate_space: "image_pixels",
+    annotations: annotations.map((a) => annotationToSidecar(a, t)),
   };
 
-  // Export annotated image:
-  // 1. Read the raw capture file as bytes via Rust (avoids tainted canvas issue)
-  // 2. Draw it onto a fresh offscreen canvas
-  // 3. Draw annotations on top
-  // 4. Export as base64 at native capture resolution
+  // Export the annotated image. When nothing was drawn and no region was
+  // selected, the raw capture file is byte-identical to what we'd export, so
+  // Rust copies it directly and skips the encode + IPC round trip.
   let imageBase64 = null;
-  if (annotations.length > 0) {
+  if (annotations.length > 0 || cropSrc) {
     try {
-      // Load the capture as a clean data URL to avoid canvas tainting
-      const captureBase64 = await invoke("read_capture_base64");
-      const cleanImg = await new Promise((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => resolve(img);
-        img.onerror = reject;
-        img.src = "data:image/png;base64," + captureBase64;
-      });
-
-      const previewW = backgroundImage.naturalWidth;
-      const previewH = backgroundImage.naturalHeight;
-      const nativeW = cleanImg.naturalWidth;
-      const nativeH = cleanImg.naturalHeight;
-
-      const nativeCrop = cropSrc
-        ? mapCropToNative(cropSrc, {
-            previewWidth: previewW,
-            previewHeight: previewH,
-            nativeWidth: nativeW,
-            nativeHeight: nativeH,
-          })
-        : null;
-
+      // backgroundImage was loaded from a data URL, so drawing it onto an
+      // offscreen canvas does not taint it and toDataURL works.
       const exportCanvas = document.createElement("canvas");
-      const exportW = nativeCrop ? nativeCrop.w : nativeW;
-      const exportH = nativeCrop ? nativeCrop.h : nativeH;
-      exportCanvas.width = exportW;
-      exportCanvas.height = exportH;
+      exportCanvas.width = t.exportW;
+      exportCanvas.height = t.exportH;
       const ectx = exportCanvas.getContext("2d");
 
-      if (nativeCrop) {
+      if (cropSrc) {
         ectx.drawImage(
-          cleanImg,
-          nativeCrop.x,
-          nativeCrop.y,
-          nativeCrop.w,
-          nativeCrop.h,
+          backgroundImage,
+          cropSrc.x,
+          cropSrc.y,
+          cropSrc.w,
+          cropSrc.h,
           0,
           0,
-          exportW,
-          exportH,
+          t.exportW,
+          t.exportH,
         );
       } else {
-        ectx.drawImage(cleanImg, 0, 0);
+        ectx.drawImage(backgroundImage, 0, 0);
       }
 
-      const nativeScaleX = exportW / window.innerWidth;
-      const nativeScaleY = exportH / window.innerHeight;
-      ectx.save();
-      ectx.setTransform(nativeScaleX, 0, 0, nativeScaleY, 0, 0);
-      ectx.beginPath();
-      ectx.rect(0, 0, window.innerWidth, window.innerHeight);
-      ectx.clip();
-
-      // Draw annotations
+      // Window coords -> image pixels. The canvas bounds clip anything drawn
+      // in the letterbox outside the image.
+      ectx.setTransform(t.sx, 0, 0, t.sy, -bgOffsetX * t.sx, -bgOffsetY * t.sy);
       for (const a of annotations) {
-        ectx.save();
-        ectx.strokeStyle = a.color;
-        ectx.fillStyle = a.color;
-        ectx.lineWidth = a.strokeWidth || currentWidth;
-        ectx.lineCap = "round";
-        ectx.lineJoin = "round";
-        switch (a.type) {
-          case "circle":
-            ectx.beginPath();
-            ectx.ellipse(
-              a.cx,
-              a.cy,
-              Math.abs(a.rx),
-              Math.abs(a.ry),
-              0,
-              0,
-              Math.PI * 2,
-            );
-            ectx.stroke();
-            break;
-          case "rect":
-            ectx.strokeRect(a.x, a.y, a.width, a.height);
-            ectx.fillStyle = a.color + "1A";
-            ectx.fillRect(a.x, a.y, a.width, a.height);
-            break;
-          case "arrow":
-            drawArrowOn(
-              ectx,
-              a.fromX,
-              a.fromY,
-              a.toX,
-              a.toY,
-              a.color,
-              a.strokeWidth,
-            );
-            break;
-          case "freehand":
-            if (a.points.length >= 2) {
-              ectx.beginPath();
-              ectx.moveTo(a.points[0].x, a.points[0].y);
-              for (let i = 1; i < a.points.length - 1; i++) {
-                const midX = (a.points[i].x + a.points[i + 1].x) / 2;
-                const midY = (a.points[i].y + a.points[i + 1].y) / 2;
-                ectx.quadraticCurveTo(a.points[i].x, a.points[i].y, midX, midY);
-              }
-              ectx.lineTo(
-                a.points[a.points.length - 1].x,
-                a.points[a.points.length - 1].y,
-              );
-              ectx.stroke();
-            }
-            break;
-          case "text":
-            ectx.font = `bold ${a.fontSize || 16}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
-            ectx.strokeStyle = "rgba(0,0,0,0.8)";
-            ectx.lineWidth = 3;
-            ectx.lineJoin = "round";
-            ectx.strokeText(a.content, a.x, a.y);
-            ectx.fillText(a.content, a.x, a.y);
-            break;
-          case "marker":
-            const r = a.radius || 16;
-            ectx.beginPath();
-            ectx.arc(a.x, a.y, r, 0, Math.PI * 2);
-            ectx.fill();
-            ectx.fillStyle = "#FFFFFF";
-            ectx.font = `bold ${r}px sans-serif`;
-            ectx.textAlign = "center";
-            ectx.textBaseline = "middle";
-            ectx.fillText(String(a.number), a.x, a.y);
-            break;
-        }
-        ectx.restore();
+        renderAnnotation(a, ectx);
       }
-      ectx.restore();
+      ectx.setTransform(1, 0, 0, 1, 0, 0);
+
       const dataUrl = exportCanvas.toDataURL("image/png");
       imageBase64 = dataUrl.split(",")[1];
     } catch (e) {
-      // Canvas export failed — fall through to save raw capture
+      console.error("Canvas export failed, saving raw capture instead:", e);
+      // The raw capture is the uncropped screen, so re-express the sidecar in
+      // full-capture pixels (same scale, shifted by the crop origin).
+      const ox = cropSrc ? cropSrc.x : 0;
+      const oy = cropSrc ? cropSrc.y : 0;
+      const tRaw = {
+        ...t,
+        point: (x, y) => {
+          const [px, py] = t.point(x, y);
+          return [px + ox, py + oy];
+        },
+      };
+      metadata.image_size = [backgroundImage.naturalWidth, backgroundImage.naturalHeight];
+      metadata.source.crop = null;
+      metadata.annotations = annotations.map((a) => annotationToSidecar(a, tRaw));
+      metadata.export_warning = "annotation compositing failed; image is the raw capture";
     }
   }
 
