@@ -1,10 +1,12 @@
 import json
 import os
 import time
-import base64
 from pathlib import Path
 
 from fastmcp import FastMCP
+from fastmcp.tools.tool import ToolResult
+from fastmcp.utilities.types import Image
+from mcp.types import TextContent
 
 mcp = FastMCP(name="snap-mcp")
 
@@ -31,11 +33,7 @@ def _log(msg: str):
         pass
 
 
-def _load_annotation(
-    json_path: Path,
-    include_image_data: bool = False,
-    max_image_bytes: int = 5_000_000,
-) -> dict:
+def _load_annotation(json_path: Path) -> dict:
     """Load a sidecar JSON and attach the image path."""
     try:
         with open(json_path) as f:
@@ -53,22 +51,52 @@ def _load_annotation(
 
     if not png_path.exists():
         data["warning"] = "image file missing"
-        return data
-
-    if include_image_data:
-        try:
-            size = png_path.stat().st_size
-            if size > max_image_bytes:
-                data["image_inline_warning"] = (
-                    f"image too large for inline payload ({size} bytes > {max_image_bytes} bytes)"
-                )
-            else:
-                data["image_base64"] = base64.b64encode(png_path.read_bytes()).decode("ascii")
-                data["image_media_type"] = "image/png"
-        except OSError as e:
-            data["image_inline_warning"] = f"failed to inline image: {e}"
 
     return data
+
+
+def _image_block(data: dict, max_image_bytes: int):
+    """Return an MCP image content block for an annotation, or None.
+
+    The PNG is sent as a proper `image` content block rather than a base64
+    string inside the JSON: clients hand image blocks to the model's vision
+    input, whereas a base64 string is just tokenized as text the model cannot
+    see. On failure a note is added to `data` explaining why no image is attached.
+    """
+    image_path = data.get("image_path")
+    if not image_path:
+        return None
+    try:
+        size = Path(image_path).stat().st_size
+        if size > max_image_bytes:
+            data["image_warning"] = (
+                f"image not attached: {size} bytes exceeds max_image_bytes={max_image_bytes}; "
+                "read it from image_path instead"
+            )
+            return None
+        return Image(path=image_path).to_image_content()
+    except OSError as e:
+        data["image_warning"] = f"image not attached: {e}"
+        return None
+
+
+def _annotation_result(
+    payload: dict, images_for: list[dict], include_image: bool, max_image_bytes: int
+) -> ToolResult:
+    """Build a tool result: JSON text (and structured content) plus optional image blocks.
+
+    `images_for` lists the annotation dicts (contained in `payload`) whose PNGs
+    should be attached. Image blocks are collected before the JSON is rendered
+    so any `image_warning` they add is included in the text.
+    """
+    blocks = []
+    if include_image:
+        for ann in images_for:
+            block = _image_block(ann, max_image_bytes)
+            if block is not None:
+                blocks.append(block)
+    content = [TextContent(type="text", text=json.dumps(payload, indent=2))] + blocks
+    return ToolResult(content=content, structured_content=payload)
 
 
 def _list_annotations_sorted() -> list[Path]:
@@ -134,53 +162,51 @@ def check_new_annotations() -> dict:
 
 @mcp.tool
 def get_latest_annotation(
-    include_image_data: bool = True, max_image_bytes: int = 5_000_000
-) -> dict:
-    """Get the most recent screen annotation. Returns the image path and
-    structured metadata including annotation positions, labels, colors, and
-    source window context. Claude Code should read the image at the returned
-    image_path to see the annotated screenshot."""
+    include_image: bool = True, max_image_bytes: int = 5_000_000
+) -> ToolResult:
+    """Get the most recent screen annotation. Returns structured metadata
+    (annotation positions in image pixels, labels, colors, source window
+    context, image_path) and, by default, the annotated screenshot itself as an
+    image content block. Agents that cannot receive images can read the file at
+    image_path instead."""
     _log("get_latest_annotation called")
     files = _list_annotations_sorted()
     if not files:
-        return {"error": "No annotations in inbox"}
-    result = _load_annotation(
-        files[0], include_image_data=include_image_data, max_image_bytes=max_image_bytes
-    )
+        return ToolResult(structured_content={"error": "No annotations in inbox"})
+    data = _load_annotation(files[0])
     _mark_read()
-    return result
+    return _annotation_result(data, [data], include_image, max_image_bytes)
 
 
 @mcp.tool
 def list_annotations(
-    last_n: int = 5, include_image_data: bool = False, max_image_bytes: int = 5_000_000
-) -> list[dict]:
+    last_n: int = 5, include_image: bool = False, max_image_bytes: int = 5_000_000
+) -> ToolResult:
     """List recent screen annotations. Returns metadata for the N most recent
-    annotations, newest first. Each entry includes the image_path that Claude
-    Code can read to see the annotated screenshot."""
+    annotations, newest first, under the "annotations" key. Each entry includes
+    the image_path of the annotated screenshot; pass include_image=true to also
+    attach the screenshots as image content blocks (in the same order)."""
     _log(f"list_annotations called (last_n={last_n})")
     files = _list_annotations_sorted()[:last_n]
-    results = [
-        _load_annotation(f, include_image_data=include_image_data, max_image_bytes=max_image_bytes)
-        for f in files
-    ]
+    results = [_load_annotation(f) for f in files]
     _mark_read()
-    return results
+    payload = {"count": len(results), "annotations": results}
+    return _annotation_result(payload, results, include_image, max_image_bytes)
 
 
 @mcp.tool
 def get_annotation(
-    filename: str, include_image_data: bool = True, max_image_bytes: int = 5_000_000
-) -> dict:
-    """Get a specific annotation by filename (without extension).
+    filename: str, include_image: bool = True, max_image_bytes: int = 5_000_000
+) -> ToolResult:
+    """Get a specific annotation by filename (without extension), with its
+    screenshot attached as an image content block by default.
     Example: get_annotation('snap-20260408-142300')"""
     _log(f"get_annotation called: {filename}")
     json_path = INBOX / f"{filename}.json"
     if not json_path.exists():
-        return {"error": f"Annotation '{filename}' not found"}
-    return _load_annotation(
-        json_path, include_image_data=include_image_data, max_image_bytes=max_image_bytes
-    )
+        return ToolResult(structured_content={"error": f"Annotation '{filename}' not found"})
+    data = _load_annotation(json_path)
+    return _annotation_result(data, [data], include_image, max_image_bytes)
 
 
 @mcp.tool
