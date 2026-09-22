@@ -173,6 +173,42 @@ struct WindowContext {
     url: Option<String>,
     window_class: Option<String>,
     pid: Option<u32>,
+    /// Which display server / platform produced this context. Lets agents
+    /// tell "no focused window" apart from "this platform can't report one"
+    /// (Wayland has no portable way to query the focused window).
+    session_type: String,
+}
+
+impl WindowContext {
+    fn empty() -> Self {
+        WindowContext {
+            window_title: None,
+            url: None,
+            window_class: None,
+            pid: None,
+            session_type: session_type().to_string(),
+        }
+    }
+}
+
+/// "wayland" | "x11" | "macos" | "windows"
+pub fn session_type() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "macos"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "windows"
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        if std::env::var("WAYLAND_DISPLAY").is_ok() {
+            "wayland"
+        } else {
+            "x11"
+        }
+    }
 }
 
 static PRE_CAPTURED_CONTEXT: Mutex<Option<WindowContext>> = Mutex::new(None);
@@ -188,12 +224,7 @@ pub fn capture_and_store_window_context() {
 
     #[cfg(target_os = "macos")]
     {
-        let ctx = get_active_window_context_macos().unwrap_or(WindowContext {
-            window_title: None,
-            url: None,
-            window_class: None,
-            pid: None,
-        });
+        let ctx = get_active_window_context_macos().unwrap_or_else(|_| WindowContext::empty());
         if let Ok(mut lock) = PRE_CAPTURED_CONTEXT.lock() {
             *lock = Some(ctx);
         }
@@ -226,12 +257,7 @@ fn get_active_window_context() -> Result<WindowContext, String> {
     {
         // Only works on X11
         if std::env::var("WAYLAND_DISPLAY").is_ok() {
-            return Ok(WindowContext {
-                window_title: None,
-                url: None,
-                window_class: None,
-                pid: None,
-            });
+            return Ok(WindowContext::empty());
         }
 
         let title = run_xdotool(&["getactivewindow", "getwindowname"]);
@@ -264,6 +290,7 @@ fn get_active_window_context() -> Result<WindowContext, String> {
             url,
             window_class: class,
             pid,
+            session_type: "x11".to_string(),
         })
     }
 }
@@ -278,12 +305,7 @@ fn get_active_window_context_windows() -> WindowContext {
     unsafe {
         let hwnd = GetForegroundWindow();
         if hwnd.0.is_null() {
-            return WindowContext {
-                window_title: None,
-                url: None,
-                window_class: None,
-                pid: None,
-            };
+            return WindowContext::empty();
         }
 
         // Window title
@@ -334,6 +356,7 @@ fn get_active_window_context_windows() -> WindowContext {
             url,
             window_class,
             pid: if pid > 0 { Some(pid) } else { None },
+            session_type: "windows".to_string(),
         }
     }
 }
@@ -399,6 +422,7 @@ fn get_active_window_context_macos() -> Result<WindowContext, String> {
         url,
         window_class: app_name,
         pid: None,
+        session_type: "macos".to_string(),
     })
 }
 
@@ -519,6 +543,25 @@ pub fn log_event(msg: &str) {
             use std::io::Write;
             f.write_all(line.as_bytes())
         });
+}
+
+// ----- Overlay window -----
+
+/// Common settings for the fullscreen annotation window. Callers add the
+/// platform-specific visibility/transparency flags before building.
+pub fn overlay_window_builder(
+    handle: &tauri::AppHandle,
+) -> tauri::WebviewWindowBuilder<'_, tauri::Wry, tauri::AppHandle> {
+    tauri::WebviewWindowBuilder::new(
+        handle,
+        "overlay",
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("Snap")
+    .decorations(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
 }
 
 // ----- Public: generate the invoke handler -----

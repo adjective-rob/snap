@@ -2,7 +2,9 @@
 # Trigger a new Snap overlay. Called by the desktop environment's global hotkey.
 # If the tray app is running, signal it. Otherwise launch the overlay directly.
 
-BINARY="$HOME/Desktop/snap/app/src-tauri/target/release/snap"
+# Resolve the repo from this script's own location so the checkout can live anywhere.
+SNAP_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+BINARY="$SNAP_DIR/app/src-tauri/target/release/snap"
 LOCK="/tmp/snap-overlay.lock"
 LOG="$HOME/.snap/snap.log"
 # The app writes its raw capture to a fixed path in the shared /tmp. On a machine

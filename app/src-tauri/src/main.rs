@@ -111,13 +111,23 @@ fn main() {
 
 /// Single-shot mode: open overlay window, user annotates, save, exit.
 /// Used on Wayland where global hotkeys require the DE to trigger us.
+///
+/// The window is created here, not in tauri.conf.json: the config declares no
+/// windows so that tray mode can build the overlay on demand. The frontend
+/// shows the window and switches it to fullscreen once the capture is loaded,
+/// so it starts hidden. The app exits when the frontend destroys the window.
 fn run_overlay_mode() {
     snap_lib::log_event("snap starting (overlay mode)");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(snap_lib::invoke_handler())
-        .setup(|_app| {
+        .setup(|app| {
+            let handle = app.handle().clone();
+            snap_lib::overlay_window_builder(&handle)
+                .visible(false)
+                .transparent(false)
+                .build()?;
             snap_lib::log_event("overlay mode ready");
             Ok(())
         })
@@ -152,6 +162,17 @@ fn run_tray_mode() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(snap_lib::invoke_handler())
+        .on_window_event(|window, event| {
+            // The frontend normally clears OVERLAY_ACTIVE via mark_overlay_closed,
+            // but if the overlay dies any other way (window-manager close, webview
+            // crash) the flag would stay set and the hotkey would be dead until
+            // restart. Destroyed is the one event that fires in every case.
+            if window.label() == "overlay" && matches!(event, tauri::WindowEvent::Destroyed) {
+                if snap_lib::OVERLAY_ACTIVE.swap(false, Ordering::SeqCst) {
+                    snap_lib::log_event("overlay destroyed without close signal; hotkey re-armed");
+                }
+            }
+        })
         .setup(|app| {
             #[cfg(target_os = "macos")]
             {
@@ -281,16 +302,7 @@ fn run_tray_mode() {
                                 let _ = window.destroy();
                             }
 
-                            let mut builder = tauri::WebviewWindowBuilder::new(
-                                &handle_inner,
-                                "overlay",
-                                tauri::WebviewUrl::App("index.html".into()),
-                            )
-                            .title("Snap")
-                            .decorations(false)
-                            .always_on_top(true)
-                            .skip_taskbar(true)
-                            .resizable(false);
+                            let mut builder = snap_lib::overlay_window_builder(&handle_inner);
 
                             #[cfg(target_os = "macos")]
                             {

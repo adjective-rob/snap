@@ -12,13 +12,6 @@
     "withGlobalTauri": true,
     "macOSPrivateApi": true,
     "security": {
-      "assetProtocol": {
-        "enable": true,
-        "scope": {
-          "allow": ["/tmp/snap-*", "/private/tmp/snap-*"],
-          "deny": []
-        }
-      },
       "csp": null
     }
   },
