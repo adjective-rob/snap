@@ -48,9 +48,14 @@ Every save produces a matched pair:
     "window_title": "localhost:3000/dashboard - Brave",
     "window_class": "Brave-browser",
     "pid": 12345,
+    "session_type": "x11",
     "display": "primary",
-    "resolution": [3840, 2160]
+    "resolution": [3840, 2160],
+    "capture_size": [3840, 2160],
+    "crop": { "x": 1200, "y": 400, "w": 1600, "h": 900 }
   },
+  "image_size": [1600, 900],
+  "coordinate_space": "image_pixels",
   "annotations": [
     {
       "type": "circle",
@@ -63,12 +68,15 @@ Every save produces a matched pair:
       "type": "text",
       "position": [350, 310],
       "content": "fix this alignment",
+      "font_size": 32,
       "color": "#FF3B30"
     }
   ],
   "image_filename": "snap-20260409-040215.png"
 }
 ```
+
+All annotation coordinates and sizes are in pixels of the saved PNG (`image_size`), so an agent can locate them directly in the image. `capture_size` is the raw screen capture and `crop` is the region of it that was selected (`null` when the whole screen was kept). `session_type` is `x11`, `wayland`, `macos`, or `windows`; on Wayland the window fields are always `null` because the compositor does not expose the focused window.
 
 ---
 
@@ -219,10 +227,12 @@ The MCP server exposes 5 tools to any MCP-compatible AI agent:
 | Tool | Description |
 |------|-------------|
 | `check_new_annotations()` | Are there new annotations since the agent last checked? Returns count and filenames. |
-| `get_latest_annotation()` | Get the most recent annotation's image path + full metadata. |
-| `list_annotations(last_n)` | List the N most recent annotations with metadata. |
-| `get_annotation(filename)` | Get a specific annotation by its filename (without extension). |
+| `get_latest_annotation(include_image=true)` | Get the most recent annotation's metadata, with the annotated PNG attached as an image content block. |
+| `list_annotations(last_n, include_image=false)` | List the N most recent annotations with metadata; optionally attach their images. |
+| `get_annotation(filename, include_image=true)` | Get a specific annotation by its filename (without extension). |
 | `clear_inbox()` | Delete all processed annotations from the inbox. |
+
+Screenshots are returned as MCP `image` content blocks, which clients pass to the model as vision input at a few thousand tokens per image. Every result also carries `image_path` so agents with file access (Claude Code) can read the PNG directly. Images larger than `max_image_bytes` (default 5 MB) are not attached and a warning says so.
 
 ### How Agents Interpret Annotations
 
@@ -282,7 +292,7 @@ The capture system tries tools in order of preference and falls back gracefully.
 
 ### HiDPI / 4K Display Support
 
-Snap correctly handles high-DPI displays. The canvas renders at physical pixel resolution for crisp annotations, while all drawing coordinates use logical pixels. The export pipeline produces a 1080p composited PNG regardless of display resolution, keeping file sizes reasonable for IPC and agent consumption.
+Snap correctly handles high-DPI displays. The canvas renders at physical pixel resolution for crisp annotations, while all drawing coordinates use logical pixels. The capture (or the selected region of it) is shown letterboxed with its aspect ratio preserved, and one transform maps window coordinates onto native capture pixels for both the composited PNG and the sidecar coordinates. The saved PNG is the selected region at the capture's native resolution; selecting a region on a 4K display is the way to keep full pixel detail while staying under the size at which vision models downscale images.
 
 ---
 
