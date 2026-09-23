@@ -507,6 +507,13 @@ fn mark_overlay_closed() {
     log_event("overlay closed");
 }
 
+/// Lets the frontend write diagnostics (viewport size, DPR, capture size)
+/// into ~/.snap/snap.log alongside the backend's lines.
+#[tauri::command]
+fn frontend_log(msg: String) {
+    log_event(&format!("[ui] {}", msg));
+}
+
 // ----- Helpers -----
 
 fn inbox_dir() -> Result<PathBuf, String> {
@@ -561,7 +568,9 @@ pub fn overlay_window_builder(
     .decorations(false)
     .always_on_top(true)
     .skip_taskbar(true)
-    .resizable(false)
+    // Deliberately resizable: GTK turns resizable(false) into fixed size
+    // hints, and some compositors then refuse to fullscreen the window.
+    // With no decorations the user cannot resize it anyway.
 }
 
 // ----- Public: generate the invoke handler -----
@@ -573,5 +582,6 @@ pub fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool {
         save_annotation,
         read_capture_base64,
         mark_overlay_closed,
+        frontend_log,
     ]
 }

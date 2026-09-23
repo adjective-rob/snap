@@ -92,7 +92,10 @@ function resizeCanvas() {
   computeBgLayout();
   render();
 }
-window.addEventListener("resize", resizeCanvas);
+window.addEventListener("resize", () => {
+  resizeCanvas();
+  if (backgroundImage) logViewport("resize");
+});
 
 // ----- Init -----
 async function init() {
@@ -170,6 +173,7 @@ async function startCaptureSession() {
     resizeCanvas();
 
     await loadBackgroundImage(captureBase64);
+    logViewport("after capture load");
   } catch (e) {
     console.error("Screen capture failed:", e);
     await getCurrentWindow().show();
@@ -188,6 +192,20 @@ async function startCaptureSession() {
     selectionPhase = true;
     canvas.style.cursor = "crosshair";
   }
+}
+
+// Diagnostics into ~/.snap/snap.log: what size the page thinks it is versus
+// the capture. If these disagree with the screen, the window is not fullscreen.
+function logViewport(stage) {
+  const cap = backgroundImage
+    ? `${backgroundImage.naturalWidth}x${backgroundImage.naturalHeight}`
+    : "none";
+  const msg =
+    `${stage}: viewport ${window.innerWidth}x${window.innerHeight} ` +
+    `dpr=${dpr} screen=${window.screen.width}x${window.screen.height} ` +
+    `capture=${cap} draw=${Math.round(bgDrawW)}x${Math.round(bgDrawH)}` +
+    `@${bgOffsetX},${bgOffsetY}`;
+  invoke("frontend_log", { msg }).catch(() => {});
 }
 
 function showError(msg) {

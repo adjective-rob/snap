@@ -109,6 +109,20 @@ fn main() {
     }
 }
 
+/// A monitor's size in logical pixels (what the webview's innerWidth/Height report).
+fn monitor_logical_size(m: &tauri::Monitor) -> (f64, f64) {
+    let size = m.size();
+    let scale = m.scale_factor();
+    snap_lib::log_event(&format!(
+        "monitor {:?}: {}x{} physical, scale {}",
+        m.name(),
+        size.width,
+        size.height,
+        scale
+    ));
+    (size.width as f64 / scale, size.height as f64 / scale)
+}
+
 /// Single-shot mode: open overlay window, user annotates, save, exit.
 /// Used on Wayland where global hotkeys require the DE to trigger us.
 ///
@@ -124,10 +138,49 @@ fn run_overlay_mode() {
         .invoke_handler(snap_lib::invoke_handler())
         .setup(|app| {
             let handle = app.handle().clone();
-            snap_lib::overlay_window_builder(&handle)
+            // On Wayland the compositor ignores fullscreen requests for this
+            // window (both the builder flag and the frontend's setFullscreen),
+            // so the window must be given the monitor's logical size explicitly
+            // or it stays at the 800x600 default. primary_monitor() is None on
+            // Wayland, so enumerate monitors and take the first.
+            let monitor_size = handle
+                .primary_monitor()
+                .ok()
+                .flatten()
+                .or_else(|| handle.available_monitors().ok().and_then(|m| m.into_iter().next()))
+                .map(|m| monitor_logical_size(&m));
+
+            let mut builder = snap_lib::overlay_window_builder(&handle)
                 .visible(false)
                 .transparent(false)
-                .build()?;
+                .fullscreen(true)
+                .position(0.0, 0.0);
+            if let Some((w, h)) = monitor_size {
+                snap_lib::log_event(&format!("sizing overlay to monitor: {}x{} logical", w, h));
+                builder = builder.inner_size(w, h);
+            }
+            let window = builder.build()?;
+
+            // Last resort: the monitor is only known once the window exists.
+            if monitor_size.is_none() {
+                if let Ok(Some(m)) = window.current_monitor() {
+                    let (w, h) = monitor_logical_size(&m);
+                    snap_lib::log_event(&format!(
+                        "sizing overlay to current monitor: {}x{} logical",
+                        w, h
+                    ));
+                    let _ = window.set_size(tauri::LogicalSize::new(w, h));
+                } else {
+                    snap_lib::log_event("WARNING: no monitor found; overlay may not cover the screen");
+                }
+            }
+
+            if let (Ok(size), Ok(fs)) = (window.inner_size(), window.is_fullscreen()) {
+                snap_lib::log_event(&format!(
+                    "overlay window created {}x{} physical, fullscreen={}",
+                    size.width, size.height, fs
+                ));
+            }
             snap_lib::log_event("overlay mode ready");
             Ok(())
         })
