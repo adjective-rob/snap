@@ -46,6 +46,7 @@ pub fn capture_screen_interactive() -> Result<(), String> {
 
 #[tauri::command]
 fn capture_screen() -> Result<String, String> {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     let path = capture_temp_path();
 
     #[cfg(target_os = "windows")]
@@ -110,7 +111,44 @@ fn capture_screen() -> Result<String, String> {
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        // Linux: try capture tools in order of preference
+        // Overlay mode starts the capture at process start (start_precapture);
+        // use that result if it is there, otherwise capture now.
+        let pending = PRECAPTURE.lock().ok().and_then(|mut slot| slot.take());
+        if let Some(handle) = pending {
+            return handle
+                .join()
+                .unwrap_or_else(|_| Err("capture thread panicked".to_string()));
+        }
+        capture_screen_linux()
+    }
+}
+
+/// Handle of a capture started before the webview asked for one (Linux).
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+static PRECAPTURE: Mutex<Option<std::thread::JoinHandle<Result<String, String>>>> =
+    Mutex::new(None);
+
+/// Start the screen capture in the background so it overlaps with webview
+/// start-up instead of running after it. Cuts hotkey-to-overlay latency by
+/// roughly the capture time, and grabs the screen closer to the keypress.
+/// `capture_screen` picks the result up. No-op off Linux, where capture is
+/// either interactive (macOS) or already fast (Windows).
+pub fn start_precapture() {
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        if let Ok(mut slot) = PRECAPTURE.lock() {
+            if slot.is_none() {
+                *slot = Some(std::thread::spawn(capture_screen_linux));
+            }
+        }
+    }
+}
+
+/// Linux: try capture tools in order of preference.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn capture_screen_linux() -> Result<String, String> {
+    let path = capture_temp_path();
+    {
         let path_str = path.to_string_lossy().to_string();
         let _ = fs::remove_file(&path);
 
@@ -131,13 +169,18 @@ fn capture_screen() -> Result<String, String> {
         };
 
         let mut last_error = String::from("No screenshot tool found");
+        let started = std::time::Instant::now();
 
         for (tool, args) in &methods {
             match Command::new(tool).args(args).output() {
                 Ok(output) if output.status.success() => {
                     match fs::metadata(&path) {
                         Ok(meta) if meta.len() > 0 => {
-                            log_event(&format!("screen captured via {}", tool));
+                            log_event(&format!(
+                                "screen captured via {} in {}ms",
+                                tool,
+                                started.elapsed().as_millis()
+                            ));
                             return Ok(path_str.clone());
                         }
                         _ => {

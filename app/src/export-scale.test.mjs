@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   mapCropToNative,
   fitLayout,
+  cropScreenRect,
   imageTransform,
   annotationToSidecar,
 } from "./export-scale.mjs";
@@ -116,4 +117,27 @@ test("annotationToSidecar converts every annotation type into image pixels", () 
     annotationToSidecar({ type: "marker", x: 10, y: 20, number: 3, radius: 16, color: "#f00" }, t),
     { type: "marker", position: [20, 40], number: 3, radius: 32, color: "#f00" },
   );
+});
+
+test("cropScreenRect: a region stays where it was on screen, at the same scale", () => {
+  // 4K capture on a 2x display: the capture is drawn 1:1 at logical size.
+  const src = { srcW: 3840, srcH: 2160 };
+  const full = fitLayout({ ...src, winW: 1920, winH: 1080, dpr: 2 });
+  const crop = { x: 400, y: 200, w: 800, h: 600 };
+  const r = cropScreenRect(full, crop, src.srcW, src.srcH);
+  assert.deepEqual(r, { offsetX: 200, offsetY: 100, drawW: 400, drawH: 300 });
+
+  // And the export transform of that region maps its screen corner to (0,0)
+  // and keeps the capture's native pixel density.
+  const t = imageTransform({ srcW: crop.w, srcH: crop.h, ...r });
+  assert.deepEqual(t.point(200, 100), [0, 0]);
+  assert.deepEqual(t.point(600, 400), [800, 600]);
+  assert.equal(t.length(10), 20);
+});
+
+test("cropScreenRect: letterboxed capture keeps the letterbox offset", () => {
+  const src = { srcW: 3840, srcH: 1080 };
+  const full = fitLayout({ ...src, winW: 1920, winH: 1080 });
+  const r = cropScreenRect(full, { x: 0, y: 0, w: 3840, h: 1080 }, src.srcW, src.srcH);
+  assert.deepEqual(r, full);
 });

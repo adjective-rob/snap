@@ -49,6 +49,20 @@ export function fitLayout({ srcW, srcH, winW, winH, dpr = 1, allowZoom = false }
   };
 }
 
+// Where a crop of the capture lands on screen when the whole capture is drawn
+// with `full` (a fitLayout result): the same sub-rectangle in window pixels.
+// The selected region is annotated in place, so it never moves or rescales.
+export function cropScreenRect(full, crop, srcW, srcH) {
+  const kx = full.drawW / srcW;
+  const ky = full.drawH / srcH;
+  return {
+    offsetX: full.offsetX + crop.x * kx,
+    offsetY: full.offsetY + crop.y * ky,
+    drawW: crop.w * kx,
+    drawH: crop.h * ky,
+  };
+}
+
 // Given where the source region is drawn in the window (from fitLayout),
 // return a transform from logical window coordinates to pixels of the
 // exported image, which is the source region at native resolution.

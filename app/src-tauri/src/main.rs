@@ -132,6 +132,8 @@ fn monitor_logical_size(m: &tauri::Monitor) -> (f64, f64) {
 /// so it starts hidden. The app exits when the frontend destroys the window.
 fn run_overlay_mode() {
     snap_lib::log_event("snap starting (overlay mode)");
+    // Grab the screen now, in parallel with GTK/webview start-up.
+    snap_lib::start_precapture();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -156,11 +158,12 @@ fn run_overlay_mode() {
                 .fullscreen(true)
                 .position(0.0, 0.0);
             if let Some((w, h)) = monitor_size {
-                // GDK under XWayland can report the monitor already scaled
-                // (a 3840x2160 panel at scale 2 comes back as 7680x4320), so
-                // this may be double the true logical size. That is harmless:
-                // the compositor clamps the window to the screen, which is
-                // exactly what we want.
+                // GDK's Wayland backend on GNOME reports the monitor geometry
+                // in physical pixels (a 3840x2160 panel at scale 2 comes back
+                // as 3840x2160 "logical", 7680x4320 "physical"), so this may be
+                // double the true logical size. That is harmless: the
+                // compositor clamps the window to the screen, which is exactly
+                // what we want.
                 snap_lib::log_event(&format!("sizing overlay to monitor: {}x{} logical", w, h));
                 builder = builder.inner_size(w, h);
             }

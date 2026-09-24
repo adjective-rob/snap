@@ -4,6 +4,7 @@ const { listen } = window.__TAURI__.event;
 import {
   mapCropToNative,
   fitLayout,
+  cropScreenRect,
   imageTransform,
   annotationToSidecar,
 } from "./export-scale.mjs";
@@ -19,6 +20,11 @@ let drawStart = null;
 let freehandPoints = [];
 let annotations = [];
 let backgroundImage = null;
+// Where the whole capture is drawn in logical window pixels. It is fitted
+// once and never moves: a selected region is annotated in place.
+let fullLayout = null;
+// Where the exported region (whole capture, or the crop) is drawn. Equal to
+// fullLayout until a region is selected.
 let bgOffsetX = 0,
   bgOffsetY = 0,
   bgDrawW = 0,
@@ -30,6 +36,15 @@ let cropSrc = null;
 let windowContext = null;
 let overlayActive = false;
 let isSaving = false;
+// The window starts hidden and may report a bogus size until it is shown
+// (GNOME's GDK reports the monitor in physical pixels, so the hidden page
+// can lay out at double size). No canvas is allocated or painted before then.
+let windowShown = false;
+// Millisecond marks since page start, for the timing line in snap.log.
+const marks = {};
+function mark(name) {
+  marks[name] = Math.round(performance.now());
+}
 
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
@@ -42,10 +57,12 @@ const toolbar = document.getElementById("toolbar");
 // so all drawing coordinates use logical pixels.
 const dpr = window.devicePixelRatio || 1;
 
-// Fit the visible source region (the whole capture, or the cropped region)
-// into the window, preserving aspect ratio and centering. bgOffset/bgDraw
-// describe where that region lands in logical window pixels, and every
-// window->image coordinate conversion goes through them (see imageTransform).
+// Fit the whole capture into the window, preserving aspect ratio and
+// centering, and never enlarging it. A selected region keeps the same pixels
+// in the same place on screen, with everything outside it dimmed, so nothing
+// jumps or gets upscaled. bgOffset/bgDraw describe where the exported region
+// lands in logical window pixels, and every window->image coordinate
+// conversion goes through them (see imageTransform).
 function sourceSize() {
   return {
     srcW: cropSrc ? cropSrc.w : backgroundImage.naturalWidth,
@@ -55,18 +72,22 @@ function sourceSize() {
 
 function computeBgLayout() {
   if (!backgroundImage) return;
-  const layout = fitLayout({
-    ...sourceSize(),
+  const srcW = backgroundImage.naturalWidth;
+  const srcH = backgroundImage.naturalHeight;
+  fullLayout = fitLayout({
+    srcW,
+    srcH,
     winW: window.innerWidth,
     winH: window.innerHeight,
     dpr,
-    // A full capture is never enlarged; a cropped region is zoomed to fill.
-    allowZoom: Boolean(cropSrc),
   });
-  bgOffsetX = layout.offsetX;
-  bgOffsetY = layout.offsetY;
-  bgDrawW = layout.drawW;
-  bgDrawH = layout.drawH;
+  const region = cropSrc
+    ? cropScreenRect(fullLayout, cropSrc, srcW, srcH)
+    : fullLayout;
+  bgOffsetX = region.offsetX;
+  bgOffsetY = region.offsetY;
+  bgDrawW = region.drawW;
+  bgDrawH = region.drawH;
 }
 
 // Mapping from logical window coordinates to pixels of the exported image
@@ -82,6 +103,7 @@ function currentImageTransform() {
 }
 
 function resizeCanvas() {
+  if (!windowShown) return;
   const logicalW = window.innerWidth;
   const logicalH = window.innerHeight;
   canvas.width = logicalW * dpr;
@@ -143,6 +165,7 @@ function resetSessionState() {
 
 async function startCaptureSession() {
   resetSessionState();
+  mark("start");
 
   try {
     // Capture window context before anything else
@@ -158,25 +181,42 @@ async function startCaptureSession() {
   }
 
   try {
-    // Capture screen BEFORE showing window
+    // The window stays hidden until the capture is decoded and drawn, so the
+    // first frame anyone sees is their screen, not a black window. In overlay
+    // mode the backend started the capture at process start, so this usually
+    // returns as soon as the webview is up.
     await invoke("capture_screen");
+    mark("captured");
     const captureBase64 = await invoke("read_capture_base64");
+    mark("read");
+    await loadBackgroundImage(captureBase64);
+    mark("decoded");
 
-    // Show window and force fullscreen
     const win = getCurrentWindow();
     await win.show();
     await win.setFullscreen(true);
     await win.setFocus();
+    windowShown = true;
+    mark("shown");
 
-    // Wait a tick for the window to resize, then set up canvas
-    await new Promise((r) => setTimeout(r, 100));
+    // The window usually reaches its final size after show(); the resize
+    // listener re-fits the capture then. Fit once now for the case where the
+    // size does not change and no resize event fires.
     resizeCanvas();
-
-    await loadBackgroundImage(captureBase64);
-    logViewport("after capture load");
+    logViewport("after show");
+    // Two frames after the paint the compositor has the first real frame.
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        mark("first_frame");
+        logViewport("first frame");
+        logTiming();
+      }),
+    );
   } catch (e) {
     console.error("Screen capture failed:", e);
+    windowShown = true;
     await getCurrentWindow().show();
+    resizeCanvas();
     showError("Screen capture failed: " + e);
     setTimeout(() => closeOverlay(), 3000);
     return;
@@ -206,6 +246,17 @@ function logViewport(stage) {
     `capture=${cap} draw=${Math.round(bgDrawW)}x${Math.round(bgDrawH)}` +
     `@${bgOffsetX},${bgOffsetY}`;
   invoke("frontend_log", { msg }).catch(() => {});
+}
+
+// One line of stage timings (ms since page start) so slow steps can be seen
+// on any machine: capture (includes waiting for the pre-capture), reading the
+// PNG over IPC, decoding it, showing the window, and the first painted frame.
+function logTiming() {
+  const order = ["captured", "read", "decoded", "shown", "first_frame"];
+  const parts = order
+    .filter((k) => k in marks)
+    .map((k) => `${k}=${marks[k] - marks.start}ms`);
+  invoke("frontend_log", { msg: `timing: ${parts.join(" ")}` }).catch(() => {});
 }
 
 function showError(msg) {
@@ -243,6 +294,7 @@ function loadBackgroundImage(base64Data) {
 
 // ----- Render -----
 function render() {
+  if (!windowShown) return;
   const logicalW = window.innerWidth;
   const logicalH = window.innerHeight;
   ctx.clearRect(0, 0, logicalW, logicalH);
@@ -281,7 +333,7 @@ function render() {
         }
       } else {
         ctx.fillStyle = "rgba(0,0,0,0.55)";
-        const label = "Drag to select region";
+        const label = "Drag to select a region · click or Enter for the whole screen · Esc to cancel";
         ctx.font = "15px -apple-system, sans-serif";
         const tw = ctx.measureText(label).width;
         ctx.fillRect(
@@ -300,20 +352,25 @@ function render() {
 
     ctx.fillStyle = "#1a1a1a";
     ctx.fillRect(0, 0, logicalW, logicalH);
+    ctx.drawImage(
+      backgroundImage,
+      fullLayout.offsetX,
+      fullLayout.offsetY,
+      fullLayout.drawW,
+      fullLayout.drawH,
+    );
     if (cropSrc) {
-      ctx.drawImage(
-        backgroundImage,
-        cropSrc.x,
-        cropSrc.y,
-        cropSrc.w,
-        cropSrc.h,
-        bgOffsetX,
-        bgOffsetY,
-        bgDrawW,
-        bgDrawH,
-      );
-    } else {
-      ctx.drawImage(backgroundImage, bgOffsetX, bgOffsetY, bgDrawW, bgDrawH);
+      // Only the selected region is exported: dim everything else and edge it.
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, logicalW, logicalH);
+      ctx.rect(bgOffsetX, bgOffsetY, bgDrawW, bgDrawH);
+      ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+      ctx.fill("evenodd");
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(bgOffsetX - 0.5, bgOffsetY - 0.5, bgDrawW + 1, bgDrawH + 1);
+      ctx.restore();
     }
   }
 
@@ -325,6 +382,11 @@ function render() {
   for (const a of annotations) {
     renderAnnotation(a);
   }
+}
+
+// Keep the whole screen: a click without a drag, or Enter, in the selection phase.
+function selectWholeScreen() {
+  commitSelection(bgOffsetX, bgOffsetY, bgDrawW, bgDrawH);
 }
 
 function selNormalized() {
@@ -356,7 +418,12 @@ function commitSelection(x, y, w, h) {
     render();
     return;
   }
-  cropSrc = clamped;
+  const wholeCapture =
+    clamped.x === 0 &&
+    clamped.y === 0 &&
+    clamped.w === backgroundImage.naturalWidth &&
+    clamped.h === backgroundImage.naturalHeight;
+  cropSrc = wholeCapture ? null : clamped;
   computeBgLayout();
   selectionPhase = false;
   selStart = null;
@@ -597,9 +664,8 @@ canvas.addEventListener("mouseup", (e) => {
       if (r.w > 10 && r.h > 10) {
         commitSelection(r.x, r.y, r.w, r.h);
       } else {
-        selStart = null;
-        selCurrent = null;
-        render();
+        // A plain click keeps the whole screen.
+        selectWholeScreen();
       }
     }
     return;
@@ -802,7 +868,11 @@ document.addEventListener("keydown", (e) => {
   switch (e.key) {
     case "Enter":
       e.preventDefault();
-      save();
+      if (selectionPhase && backgroundImage) {
+        selectWholeScreen();
+      } else {
+        save();
+      }
       return;
     case "Escape":
       if (isDrawing) {
