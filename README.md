@@ -28,11 +28,12 @@ Snap is two components:
 
 1. Press `Ctrl+Shift+S` from anywhere
 2. Your screen freezes into an annotation canvas
-3. Circle things, draw arrows, type labels, number issues
-4. Hit Enter (or click the green checkmark)
-5. Annotated PNG + structured JSON metadata drops into `~/.snap/inbox/`
-6. In Claude Code: "check my latest snap annotation"
-7. Claude Code reads the image and metadata, understands what you marked, makes the fix
+3. Drag to select the region you care about (or click, or press Enter, for the whole screen)
+4. Circle things, draw arrows, type labels, number issues
+5. Hit Enter (or click the green checkmark)
+6. Annotated PNG + structured JSON metadata drops into `~/.snap/inbox/`
+7. In Claude Code: "check my latest snap annotation"
+8. Claude Code reads the image and metadata, understands what you marked, makes the fix
 
 ### What Gets Saved
 
@@ -96,6 +97,8 @@ All annotation coordinates and sizes are in pixels of the saved PNG (`image_size
 | Key | Action |
 |-----|--------|
 | `Ctrl+Shift+S` | Open annotation overlay (global, works from any app) |
+| drag | Select the region to annotate and export; everything outside it is dimmed |
+| click or `Enter` (before selecting) | Keep the whole screen |
 | `D` | Toggle dim layer (darkens background for contrast) |
 | `Ctrl+Z` | Undo last annotation |
 | `Enter` | Save annotated screenshot and close |
@@ -116,26 +119,21 @@ All annotation coordinates and sizes are in pixels of the saved PNG (`image_size
 # Install system deps (Ubuntu/Debian)
 make deps
 
-# Build the Tauri app + MCP server
-make build
+# Build the app + MCP server, then wire up the hotkey for your session:
+#   Wayland (GNOME) -> registers a custom keybinding that runs snap-trigger.sh
+#   X11             -> installs the tray app as a user service
+make install
 
 # Register with all your AI tools (Claude Code, Claude Desktop, Cursor, Windsurf)
 ./setup-mcp.sh
 
-# Configure the hotkey (see SETUP.md for X11/Sway/Hyprland)
-# GNOME Wayland:
-chmod +x snap-trigger.sh
-gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings \
-  "['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/snap/']"
-gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/snap/ \
-  name "Snap Annotation"
-gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/snap/ \
-  command "$(pwd)/snap-trigger.sh"
-gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/snap/ \
-  binding "<Control><Shift>s"
+# Check the whole install: capture tool, display, hotkey, MCP
+./snap-doctor.sh
 ```
 
-Press `Ctrl+Shift+S`, draw on your screen, hit Enter. Then tell your agent: *"check my latest snap annotation"*
+Press `Ctrl+Shift+S`, drag a region (or click for the whole screen), draw, hit Enter. Then tell your agent: *"check my latest snap annotation"*
+
+To use a different key: `SNAP_HOTKEY='<Super><Shift>s' make hotkey`. Sway and Hyprland users bind a key to `snap-trigger.sh` by hand; `make hotkey` prints the line.
 
 For detailed setup instructions, see **[SETUP.md](SETUP.md)**.
 
@@ -270,9 +268,11 @@ snap/
     pyproject.toml           Package metadata + fastmcp dependency
     .venv/                  Python virtual environment (created during setup)
 
-  snap-trigger.sh           GNOME hotkey trigger script (Wayland)
+  snap-trigger.sh           Hotkey trigger script (Wayland): launches one overlay
+  install-hotkey.sh         Registers the GNOME keybinding (keeps other shortcuts)
+  snap-doctor.sh            Checks capture tool, display, hotkey, MCP registration
   snap.service              systemd user service (X11 tray mode)
-  Makefile                  Build, install, start/stop commands
+  Makefile                  Build, install, hotkey, doctor, start/stop commands
   CLAUDE.md                 Project instructions for Claude Code
   SETUP.md                  Detailed setup guide
   LICENSE                   MIT
@@ -292,7 +292,9 @@ The capture system tries tools in order of preference and falls back gracefully.
 
 ### HiDPI / 4K Display Support
 
-Snap correctly handles high-DPI displays. The canvas renders at physical pixel resolution for crisp annotations, while all drawing coordinates use logical pixels. The capture (or the selected region of it) is shown letterboxed with its aspect ratio preserved, and one transform maps window coordinates onto native capture pixels for both the composited PNG and the sidecar coordinates. The saved PNG is the selected region at the capture's native resolution; selecting a region on a 4K display is the way to keep full pixel detail while staying under the size at which vision models downscale images.
+Snap correctly handles high-DPI displays. The canvas renders at physical pixel resolution for crisp annotations, while all drawing coordinates use logical pixels. The capture is shown 1:1 (letterboxed if it is larger than the window) and stays where it is: selecting a region dims everything outside it rather than zooming it, so the screen never jumps or blurs. One transform maps window coordinates onto native capture pixels for both the composited PNG and the sidecar coordinates. The saved PNG is the selected region at the capture's native resolution; selecting a region on a 4K display is the way to keep full pixel detail while staying under the size at which vision models downscale images.
+
+On Linux the overlay starts the screen capture the moment the process launches, in parallel with the webview, and the window is shown only once the capture is decoded, so the first frame you see is your screen.
 
 ---
 

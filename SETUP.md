@@ -104,37 +104,26 @@ make build
 
 Tauri's global shortcut plugin doesn't work on Wayland. Instead, GNOME handles the hotkey and runs a trigger script.
 
-**1. Make the trigger script executable:**
+**1. Register the keybinding:**
 ```bash
-chmod +x snap-trigger.sh
+make hotkey          # or: ./install-hotkey.sh
 ```
 
-**2. Register the GNOME custom keybinding:**
-```bash
-gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings \
-  "['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/snap/']"
+This makes `snap-trigger.sh` executable and adds a GNOME custom keybinding for `Ctrl+Shift+S` that runs it. Your existing custom shortcuts are left alone. (`make install` does this for you on a Wayland session.)
 
-gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/snap/ \
-  name "Snap Annotation"
-
-gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/snap/ \
-  command "$HOME/Desktop/snap/snap-trigger.sh"
-
-gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/snap/ \
-  binding "<Control><Shift>s"
-```
-
-**3. Test it:**
+**2. Test it:**
 
 Press `Ctrl+Shift+S`. The overlay should appear with a screenshot of your desktop.
 
-**To change the hotkey**, replace `<Control><Shift>s` with your preferred combo. Examples:
-- `<Super><Shift>s` — Windows key + Shift + S
-- `<Control><Shift>x` — Ctrl + Shift + X
+**To change the hotkey**, pass a GTK accelerator:
+```bash
+SNAP_HOTKEY='<Super><Shift>s' make hotkey    # Windows key + Shift + S
+SNAP_HOTKEY='<Control><Shift>x' make hotkey  # Ctrl + Shift + X
+```
 
 **To remove the keybinding:**
 ```bash
-gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "[]"
+./install-hotkey.sh --remove
 ```
 
 ### X11
@@ -390,21 +379,27 @@ grep "Saved annotation" ~/.snap/snap.log
 # Try clicking the green checkmark button instead of pressing Enter
 ```
 
-### Screenshot appears zoomed in or tiny in the corner
+### Not sure what is wrong
 
-**Cause:** HiDPI scaling mismatch. The app needs to know your display's pixel ratio.
-
-**Fix:** This is handled automatically in the latest version. If you still see issues:
 ```bash
-# Check your display scale
-python3 -c "
-import gi; gi.require_version('Gdk', '3.0')
-from gi.repository import Gdk
-d = Gdk.Display.get_default()
-m = d.get_monitor(0)
-print(f'Resolution: {m.get_geometry().width}x{m.get_geometry().height}, Scale: {m.get_scale_factor()}')
-"
+./snap-doctor.sh
 ```
+
+It checks the build, takes a silent test capture with the right tool for your session, prints what GDK reports for your monitors, and verifies the hotkey and MCP registration.
+
+### Screenshot appears zoomed in, tiny in the corner, or offset
+
+**Cause:** the overlay window is not the size of the screen, or the display scale is not what the app was told.
+
+**Fix:** press the hotkey once, then look at the last lines of `~/.snap/snap.log`. The app logs the monitor size and scale it was given, the window size it created, and what the page saw:
+
+```
+monitor Some("LG HDR 4K"): 7680x4320 physical, scale 2
+sizing overlay to monitor: 3840x2160 logical
+[ui] after show: viewport 1920x1080 dpr=2 screen=3840x2160 capture=3840x2160 draw=1920x1080@0,0
+```
+
+`viewport` should be your screen's logical size, `capture` its physical size, and `draw` should equal the viewport at `@0,0` for a single monitor. (GNOME's GDK reports the monitor in physical pixels, hence the doubled "physical" line; the compositor clamps the window, so this is harmless.) If they disagree, open an issue with those lines.
 
 ### MCP server not connected
 

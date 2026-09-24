@@ -1,4 +1,4 @@
-.PHONY: build install start stop restart logs status clean dev deps deps-macos deps-linux setup-mcp
+.PHONY: build install start stop restart logs status clean dev deps deps-macos deps-linux setup-mcp hotkey doctor
 
 OS := $(shell uname -s)
 TAURI_BUILD_ARGS :=
@@ -22,9 +22,10 @@ deps-macos:
 	@command -v node >/dev/null 2>&1 || (command -v brew >/dev/null 2>&1 && brew install node) || echo "Install Node.js from https://nodejs.org"
 	@echo "macOS dependencies ready."
 
-# Linux (Ubuntu/Debian)
+# Linux (Ubuntu/Debian). gnome-screenshot is the Wayland capture tool and is
+# no longer preinstalled on Ubuntu; scrot + xdotool cover X11.
 deps-linux:
-	sudo apt install -y scrot xdotool pkg-config libwebkit2gtk-4.1-dev \
+	sudo apt install -y gnome-screenshot scrot xdotool pkg-config libwebkit2gtk-4.1-dev \
 		build-essential libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
 build:
@@ -41,9 +42,10 @@ else
 	$(MAKE) install-linux
 endif
 	@echo ""
-	@echo "Snap installed and running."
-	@echo "Register with Claude Code:"
-	@echo "  claude mcp add --transport stdio snap -- $(PWD)/mcp-server/.venv/bin/python $(PWD)/mcp-server/server.py"
+	@echo "Snap installed. Register it with your AI tools:"
+	@echo "  ./setup-mcp.sh"
+	@echo "Check everything:"
+	@echo "  ./snap-doctor.sh"
 
 install-macos:
 	mkdir -p ~/Library/LaunchAgents
@@ -51,7 +53,17 @@ install-macos:
 	launchctl unload ~/Library/LaunchAgents/com.adjective.snap.plist 2>/dev/null || true
 	launchctl load -w ~/Library/LaunchAgents/com.adjective.snap.plist
 
+# Wayland: no tray/global-shortcut support, so the desktop's own hotkey runs
+# the overlay (install-hotkey.sh). X11: the tray app owns the hotkey and runs
+# as a user service.
 install-linux:
+ifeq ($(XDG_SESSION_TYPE),wayland)
+	./install-hotkey.sh
+else
+	$(MAKE) install-linux-service
+endif
+
+install-linux-service:
 	mkdir -p ~/.config/systemd/user
 	cp snap.service ~/.config/systemd/user/
 	sed -i "s|%h/Desktop/snap|$(PWD)|g" ~/.config/systemd/user/snap.service
@@ -97,6 +109,14 @@ endif
 
 setup-mcp:
 	./setup-mcp.sh
+
+# Register (or re-register) the Wayland hotkey. SNAP_HOTKEY overrides the key.
+hotkey:
+	./install-hotkey.sh
+
+# Check the install end to end.
+doctor:
+	./snap-doctor.sh
 
 clean:
 	rm -rf app/src-tauri/target app/node_modules
