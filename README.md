@@ -28,7 +28,7 @@ Snap is two components:
 
 1. Press `Ctrl+Shift+S` from anywhere
 2. Your screen freezes into an annotation canvas
-3. Drag to select the region you care about (or click, or press Enter, for the whole screen)
+3. Optionally drag to select the region you care about; otherwise the whole screen is kept
 4. Circle things, draw arrows, type labels, number issues
 5. Hit Enter (or click the green checkmark)
 6. Annotated PNG + structured JSON metadata drops into `~/.snap/inbox/`
@@ -85,6 +85,7 @@ All annotation coordinates and sizes are in pixels of the saved PNG (`image_size
 
 | Tool | Shortcut | Description |
 |------|----------|-------------|
+| Select region | `S` | Drag to choose the region to export; everything outside is dimmed. Click without dragging to go back to the whole screen. Active when the overlay opens on Linux and Windows. |
 | Circle | `C` | Click-drag to draw ellipses. Shift constrains to circle. |
 | Rectangle | `R` | Click-drag to draw boxes. Shift constrains to square. 10% fill for visibility. |
 | Arrow | `A` | Click start, drag to end. Arrowhead on the endpoint. |
@@ -97,8 +98,6 @@ All annotation coordinates and sizes are in pixels of the saved PNG (`image_size
 | Key | Action |
 |-----|--------|
 | `Ctrl+Shift+S` | Open annotation overlay (global, works from any app) |
-| drag | Select the region to annotate and export; everything outside it is dimmed |
-| click or `Enter` (before selecting) | Keep the whole screen |
 | `D` | Toggle dim layer (darkens background for contrast) |
 | `Ctrl+Z` | Undo last annotation |
 | `Enter` | Save annotated screenshot and close |
@@ -131,7 +130,7 @@ make install
 ./snap-doctor.sh
 ```
 
-Press `Ctrl+Shift+S`, drag a region (or click for the whole screen), draw, hit Enter. Then tell your agent: *"check my latest snap annotation"*
+Press `Ctrl+Shift+S`, draw (drag a region first if you only want part of the screen), hit Enter. Then tell your agent: *"check my latest snap annotation"*
 
 To use a different key: `SNAP_HOTKEY='<Super><Shift>s' make hotkey`. Sway and Hyprland users bind a key to `snap-trigger.sh` by hand; `make hotkey` prints the line.
 

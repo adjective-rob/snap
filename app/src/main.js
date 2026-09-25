@@ -10,7 +10,13 @@ import {
 } from "./export-scale.mjs";
 
 // ----- State -----
-let currentTool = "circle";
+// The tool the overlay opens with. On Linux/Windows the capture is the whole
+// screen, so the region tool is up first: drag to choose what to export, or
+// just pick a drawing tool and annotate the whole screen. On macOS the region
+// was already chosen in the native capture, so start drawing straight away.
+const isMac = navigator.userAgent.includes("Mac");
+const defaultTool = isMac ? "circle" : "select";
+let currentTool = defaultTool;
 let currentColor = "#FF3B30";
 let currentWidth = 4;
 let markerCounter = 1;
@@ -29,7 +35,7 @@ let bgOffsetX = 0,
   bgOffsetY = 0,
   bgDrawW = 0,
   bgDrawH = 0;
-let selectionPhase = false;
+// In-progress drag of the region tool, in window coords.
 let selStart = null,
   selCurrent = null;
 let cropSrc = null;
@@ -131,7 +137,7 @@ async function init() {
 }
 
 function resetSessionState() {
-  currentTool = "circle";
+  currentTool = defaultTool;
   currentColor = "#FF3B30";
   currentWidth = 4;
   markerCounter = 1;
@@ -140,7 +146,6 @@ function resetSessionState() {
   drawStart = null;
   freehandPoints = [];
   annotations = [];
-  selectionPhase = false;
   selStart = null;
   selCurrent = null;
   cropSrc = null;
@@ -151,7 +156,7 @@ function resetSessionState() {
   textInput.value = "";
 
   document.querySelectorAll(".tool-btn").forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.tool === "circle");
+    btn.classList.toggle("active", btn.dataset.tool === defaultTool);
   });
   document.querySelectorAll(".color-btn").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.color === "#FF3B30");
@@ -224,14 +229,9 @@ async function startCaptureSession() {
 
   overlayActive = true;
 
-  if (navigator.userAgent.includes("Mac")) {
-    selectionPhase = false;
-    canvas.style.cursor = "default";
-    toolbar.classList.add("visible");
-  } else {
-    selectionPhase = true;
-    canvas.style.cursor = "crosshair";
-  }
+  // The toolbar is there from the first frame on every platform.
+  selectTool(defaultTool);
+  toolbar.classList.add("visible");
 }
 
 // Diagnostics into ~/.snap/snap.log: what size the page thinks it is versus
@@ -300,56 +300,6 @@ function render() {
   ctx.clearRect(0, 0, logicalW, logicalH);
 
   if (backgroundImage) {
-    if (selectionPhase) {
-      ctx.save();
-      ctx.globalAlpha = 0.45;
-      ctx.drawImage(backgroundImage, bgOffsetX, bgOffsetY, bgDrawW, bgDrawH);
-      ctx.restore();
-
-      if (selStart && selCurrent) {
-        const r = selNormalized();
-        if (r.w > 1 && r.h > 1) {
-          const sx =
-            ((r.x - bgOffsetX) / bgDrawW) * backgroundImage.naturalWidth;
-          const sy =
-            ((r.y - bgOffsetY) / bgDrawH) * backgroundImage.naturalHeight;
-          const sw = (r.w / bgDrawW) * backgroundImage.naturalWidth;
-          const sh = (r.h / bgDrawH) * backgroundImage.naturalHeight;
-          ctx.drawImage(backgroundImage, sx, sy, sw, sh, r.x, r.y, r.w, r.h);
-          ctx.strokeStyle = "white";
-          ctx.lineWidth = 1.5;
-          ctx.setLineDash([6, 3]);
-          ctx.strokeRect(r.x, r.y, r.w, r.h);
-          ctx.setLineDash([]);
-          ctx.fillStyle = "rgba(0,0,0,0.65)";
-          ctx.fillRect(r.x, r.y - 22, 74, 18);
-          ctx.fillStyle = "white";
-          ctx.font = "11px -apple-system, sans-serif";
-          ctx.fillText(
-            `${Math.round(r.w)} × ${Math.round(r.h)}`,
-            r.x + 4,
-            r.y - 8,
-          );
-        }
-      } else {
-        ctx.fillStyle = "rgba(0,0,0,0.55)";
-        const label = "Drag to select a region · click or Enter for the whole screen · Esc to cancel";
-        ctx.font = "15px -apple-system, sans-serif";
-        const tw = ctx.measureText(label).width;
-        ctx.fillRect(
-          logicalW / 2 - tw / 2 - 12,
-          logicalH / 2 - 20,
-          tw + 24,
-          32,
-        );
-        ctx.fillStyle = "white";
-        ctx.textAlign = "center";
-        ctx.fillText(label, logicalW / 2, logicalH / 2 + 1);
-        ctx.textAlign = "start";
-      }
-      return;
-    }
-
     ctx.fillStyle = "#1a1a1a";
     ctx.fillRect(0, 0, logicalW, logicalH);
     ctx.drawImage(
@@ -359,18 +309,35 @@ function render() {
       fullLayout.drawW,
       fullLayout.drawH,
     );
-    if (cropSrc) {
+
+    const drag = selStart && selCurrent ? selNormalized() : null;
+    if (drag && drag.w > 1 && drag.h > 1) {
+      // Region drag in progress: dim everything but the rectangle.
+      dimOutside(drag.x, drag.y, drag.w, drag.h, 0.55);
+      ctx.strokeStyle = "white";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 3]);
+      ctx.strokeRect(drag.x, drag.y, drag.w, drag.h);
+      ctx.setLineDash([]);
+      const label = `${Math.round(drag.w)} × ${Math.round(drag.h)}`;
+      ctx.font = "11px -apple-system, sans-serif";
+      const lw = ctx.measureText(label).width + 8;
+      ctx.fillStyle = "rgba(0,0,0,0.65)";
+      ctx.fillRect(drag.x, drag.y - 22, lw, 18);
+      ctx.fillStyle = "white";
+      ctx.fillText(label, drag.x + 4, drag.y - 8);
+    } else if (cropSrc) {
       // Only the selected region is exported: dim everything else and edge it.
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(0, 0, logicalW, logicalH);
-      ctx.rect(bgOffsetX, bgOffsetY, bgDrawW, bgDrawH);
-      ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
-      ctx.fill("evenodd");
+      dimOutside(bgOffsetX, bgOffsetY, bgDrawW, bgDrawH, 0.6);
       ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
       ctx.lineWidth = 1;
       ctx.strokeRect(bgOffsetX - 0.5, bgOffsetY - 0.5, bgDrawW + 1, bgDrawH + 1);
-      ctx.restore();
+    } else if (currentTool === "select") {
+      drawHint(
+        "Drag to select a region, or pick a tool and draw · Enter saves · Esc cancels",
+        logicalW,
+        logicalH,
+      );
     }
   }
 
@@ -384,9 +351,29 @@ function render() {
   }
 }
 
-// Keep the whole screen: a click without a drag, or Enter, in the selection phase.
-function selectWholeScreen() {
-  commitSelection(bgOffsetX, bgOffsetY, bgDrawW, bgDrawH);
+// Darken the canvas outside a rectangle (window coords).
+function dimOutside(x, y, w, h, alpha) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, window.innerWidth, window.innerHeight);
+  ctx.rect(x, y, w, h);
+  ctx.fillStyle = `rgba(0, 0, 0, ${alpha})`;
+  ctx.fill("evenodd");
+  ctx.restore();
+}
+
+// One-line hint near the bottom of the screen.
+function drawHint(text, logicalW, logicalH) {
+  ctx.save();
+  ctx.font = "14px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  const tw = ctx.measureText(text).width;
+  const y = logicalH - 48;
+  ctx.fillStyle = "rgba(0,0,0,0.6)";
+  ctx.fillRect(logicalW / 2 - tw / 2 - 14, y - 20, tw + 28, 32);
+  ctx.fillStyle = "rgba(255,255,255,0.9)";
+  ctx.textAlign = "center";
+  ctx.fillText(text, logicalW / 2, y + 1);
+  ctx.restore();
 }
 
 function selNormalized() {
@@ -425,11 +412,19 @@ function commitSelection(x, y, w, h) {
     clamped.h === backgroundImage.naturalHeight;
   cropSrc = wholeCapture ? null : clamped;
   computeBgLayout();
-  selectionPhase = false;
   selStart = null;
   selCurrent = null;
-  canvas.style.cursor = "default";
-  toolbar.classList.add("visible");
+  // Region chosen: hand over to the first drawing tool.
+  selectTool("circle");
+  render();
+}
+
+// Back to exporting the whole screen (a click, without a drag, with the region tool).
+function clearSelection() {
+  cropSrc = null;
+  selStart = null;
+  selCurrent = null;
+  computeBgLayout();
   render();
 }
 
@@ -557,7 +552,7 @@ canvas.addEventListener("mousedown", (e) => {
   const x = e.offsetX;
   const y = e.offsetY;
 
-  if (selectionPhase) {
+  if (currentTool === "select") {
     selStart = { x, y };
     selCurrent = { x, y };
     return;
@@ -590,7 +585,7 @@ canvas.addEventListener("mousedown", (e) => {
 });
 
 canvas.addEventListener("mousemove", (e) => {
-  if (selectionPhase) {
+  if (currentTool === "select") {
     if (selStart) {
       selCurrent = { x: e.offsetX, y: e.offsetY };
       render();
@@ -658,14 +653,13 @@ canvas.addEventListener("mousemove", (e) => {
 });
 
 canvas.addEventListener("mouseup", (e) => {
-  if (selectionPhase) {
+  if (currentTool === "select") {
     if (selStart) {
       const r = selNormalized();
       if (r.w > 10 && r.h > 10) {
         commitSelection(r.x, r.y, r.w, r.h);
       } else {
-        // A plain click keeps the whole screen.
-        selectWholeScreen();
+        clearSelection();
       }
     }
     return;
@@ -795,8 +789,7 @@ document.querySelectorAll(".tool-btn").forEach((btn) => {
     document
       .querySelectorAll(".tool-btn")
       .forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
-    currentTool = btn.dataset.tool;
+    selectTool(btn.dataset.tool);
   });
 });
 
@@ -868,14 +861,14 @@ document.addEventListener("keydown", (e) => {
   switch (e.key) {
     case "Enter":
       e.preventDefault();
-      if (selectionPhase && backgroundImage) {
-        selectWholeScreen();
-      } else {
-        save();
-      }
+      save();
       return;
     case "Escape":
-      if (isDrawing) {
+      if (selStart) {
+        selStart = null;
+        selCurrent = null;
+        render();
+      } else if (isDrawing) {
         isDrawing = false;
         drawStart = null;
         freehandPoints = [];
@@ -887,6 +880,9 @@ document.addEventListener("keydown", (e) => {
   }
 
   switch (e.key.toLowerCase()) {
+    case "s":
+      selectTool("select");
+      break;
     case "c":
       selectTool("circle");
       break;
@@ -922,9 +918,13 @@ document.addEventListener("keydown", (e) => {
 
 function selectTool(tool) {
   currentTool = tool;
+  selStart = null;
+  selCurrent = null;
+  canvas.style.cursor = tool === "select" ? "crosshair" : "default";
   document.querySelectorAll(".tool-btn").forEach((b) => {
     b.classList.toggle("active", b.dataset.tool === tool);
   });
+  render();
 }
 
 // ----- Actions -----
