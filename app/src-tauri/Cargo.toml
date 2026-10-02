@@ -21,6 +21,12 @@ dirs = "5"
 base64 = "0.22"
 png = "0.17"
 
+# Linux: D-Bus access to the XDG desktop portal for screen capture. Same
+# versions Tauri's GTK stack already pulls in.
+[target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
+gio = "0.18"
+glib = "0.18"
+
 [target.'cfg(target_os = "windows")'.dependencies]
 screenshots = "0.8"
 windows = { version = "0.58", features = [

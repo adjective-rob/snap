@@ -282,12 +282,12 @@ snap/
 | Platform | Screen Capture | Window Context | Global Hotkey |
 |----------|---------------|----------------|---------------|
 | Linux X11 | `scrot` | `xdotool` (title, class, PID) | Tauri global-shortcut plugin (tray mode) |
-| Linux Wayland (GNOME) | `gnome-screenshot` | Not available | GNOME custom keybinding → `snap-trigger.sh` |
-| Linux Wayland (wlroots) | `grim` | Not available | Compositor keybinding → `snap-trigger.sh` |
+| Linux Wayland (GNOME) | XDG desktop portal, then `gnome-screenshot` | Not available | GNOME custom keybinding → `snap-trigger.sh` |
+| Linux Wayland (wlroots) | XDG desktop portal, then `grim` | Not available | Compositor keybinding → `snap-trigger.sh` |
 | macOS | `screencapture` | AppleScript (title, URL, PID) | Tauri global-shortcut plugin (tray mode) |
 | Windows | `screenshots` crate | Win32 `GetForegroundWindow` (title, class, PID) | Tauri global-shortcut plugin (tray mode) |
 
-The capture system tries tools in order of preference and falls back gracefully. On Wayland with GNOME, it tries `gnome-screenshot` first, then `grim`, then `scrot`. On Windows, capture goes through the cross-platform `screenshots` crate and window context is read from the Win32 foreground window.
+The capture system tries tools in order of preference and falls back gracefully. On Wayland it asks the XDG desktop portal first, then tries `gnome-screenshot`, `grim`, and `scrot`, each with a timeout. The portal is required on GNOME 50 and later (Ubuntu 26.04), where `gnome-screenshot` is no longer allowed to capture the screen. On Windows, capture goes through the cross-platform `screenshots` crate and window context is read from the Win32 foreground window.
 
 ### HiDPI / 4K Display Support
 
@@ -302,7 +302,7 @@ On Linux the overlay starts the screen capture the moment the process launches, 
 - All data stays local. Screenshots are saved to `~/.snap/inbox/` and nowhere else.
 - The MCP server is read-only over stdio. It never writes to the inbox, only reads and deletes.
 - No network calls. No telemetry. No cloud.
-- The screen capture uses your system's native screenshot tool (`gnome-screenshot`, `scrot`, or `grim`).
+- The screen capture uses your system's native screenshot path (the XDG desktop portal, `gnome-screenshot`, `scrot`, or `grim`).
 - Log file at `~/.snap/snap.log` (auto-rotates at 1MB). Contains timestamps and event names only, no image data.
 
 ---

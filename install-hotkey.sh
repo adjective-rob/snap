@@ -66,6 +66,7 @@ echo "Registered $BINDING -> $TRIGGER"
 
 if ! command -v gnome-screenshot >/dev/null 2>&1; then
     echo ""
-    echo "WARNING: gnome-screenshot is not installed; the overlay cannot capture the screen."
-    echo "         sudo apt install gnome-screenshot"
+    echo "NOTE: gnome-screenshot is not installed. Capture goes through the desktop portal;"
+    echo "      gnome-screenshot is only the fallback on GNOME older than 50."
+    echo "      Check with ./snap-doctor.sh"
 fi

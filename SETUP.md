@@ -34,7 +34,8 @@ You need **one** of these, depending on your display server:
 
 | Display Server | Tool | Install |
 |---------------|------|---------|
-| GNOME on Wayland (Ubuntu default) | `gnome-screenshot` | `sudo apt install gnome-screenshot` |
+| GNOME 50+ on Wayland (Ubuntu 26.04) | XDG desktop portal | preinstalled (`xdg-desktop-portal-gnome`) |
+| Older GNOME on Wayland | `gnome-screenshot` | `sudo apt install gnome-screenshot` |
 | wlroots Wayland (Sway, Hyprland) | `grim` | `sudo apt install grim` |
 | X11 | `scrot` | `sudo apt install scrot` |
 
@@ -336,9 +337,9 @@ This project uses Snap for visual annotations. Call `check_new_annotations()` at
 
 **Cause:** No screenshot tool installed, or the installed tool doesn't work with your display server.
 
-**Fix:** Install the right tool for your display server (see Prerequisites above). Test it manually:
+**Fix:** Install the right tool for your display server (see Prerequisites above). `./snap-doctor.sh` tests the capture path end to end, including the desktop portal. To test a tool manually:
 ```bash
-# GNOME Wayland
+# GNOME Wayland before GNOME 50 (on 50+ this hangs; the app uses the portal)
 gnome-screenshot --file=/tmp/test.png && echo "OK"
 
 # wlroots Wayland

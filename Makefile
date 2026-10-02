@@ -22,8 +22,9 @@ deps-macos:
 	@command -v node >/dev/null 2>&1 || (command -v brew >/dev/null 2>&1 && brew install node) || echo "Install Node.js from https://nodejs.org"
 	@echo "macOS dependencies ready."
 
-# Linux (Ubuntu/Debian). gnome-screenshot is the Wayland capture tool and is
-# no longer preinstalled on Ubuntu; scrot + xdotool cover X11.
+# Linux (Ubuntu/Debian). Wayland capture goes through the desktop portal;
+# gnome-screenshot is the fallback for GNOME older than 50 and is no longer
+# preinstalled on Ubuntu. scrot + xdotool cover X11.
 deps-linux:
 	sudo apt install -y gnome-screenshot scrot xdotool pkg-config libwebkit2gtk-4.1-dev \
 		build-essential libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev

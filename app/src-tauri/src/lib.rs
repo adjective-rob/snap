@@ -171,41 +171,216 @@ fn capture_screen_linux() -> Result<String, String> {
         let mut last_error = String::from("No screenshot tool found");
         let started = std::time::Instant::now();
 
-        for (tool, args) in &methods {
-            match Command::new(tool).args(args).output() {
-                Ok(output) if output.status.success() => {
-                    match fs::metadata(&path) {
-                        Ok(meta) if meta.len() > 0 => {
-                            log_event(&format!(
-                                "screen captured via {} in {}ms",
-                                tool,
-                                started.elapsed().as_millis()
-                            ));
-                            return Ok(path_str.clone());
-                        }
-                        _ => {
-                            last_error = format!("{} produced empty file", tool);
-                            continue;
-                        }
-                    }
+        // Wayland: the desktop portal first. It is the only silent route on
+        // GNOME 50+, where gnome-screenshot is no longer allowed to capture.
+        if std::env::var("WAYLAND_DISPLAY").is_ok() {
+            match capture_via_portal(&path) {
+                Ok(()) => {
+                    log_event(&format!(
+                        "screen captured via portal in {}ms",
+                        started.elapsed().as_millis()
+                    ));
+                    return Ok(path_str.clone());
                 }
-                Ok(output) => {
-                    last_error = format!(
-                        "{} failed: {}",
-                        tool,
-                        String::from_utf8_lossy(&output.stderr)
-                    );
-                    continue;
+                Err(e) => {
+                    log_event(&format!("portal capture failed: {}; trying capture tools", e));
+                    last_error = format!("portal: {}", e);
                 }
-                Err(_) => continue, // tool not installed, try next
             }
         }
 
+        for (tool, args) in &methods {
+            match run_capture_tool(tool, args) {
+                Some(Ok(())) => match fs::metadata(&path) {
+                    Ok(meta) if meta.len() > 0 => {
+                        log_event(&format!(
+                            "screen captured via {} in {}ms",
+                            tool,
+                            started.elapsed().as_millis()
+                        ));
+                        return Ok(path_str.clone());
+                    }
+                    _ => {
+                        last_error = format!("{} produced empty file", tool);
+                        continue;
+                    }
+                },
+                Some(Err(e)) => {
+                    last_error = e;
+                    continue;
+                }
+                None => continue, // tool not installed, try next
+            }
+        }
+
+        log_event(&format!("screen capture failed: {}", last_error));
         Err(format!(
             "Screen capture failed: {}. Install one of: sudo apt install gnome-screenshot grim scrot",
             last_error
         ))
     }
+}
+
+/// Run a capture tool, killing it if it does not finish in time. Returns None
+/// when the tool is not installed. The timeout matters: on GNOME 50
+/// gnome-screenshot neither captures nor exits, and an overlay stuck waiting
+/// on it holds the hotkey lock until someone kills it.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn run_capture_tool(tool: &str, args: &[&str]) -> Option<Result<(), String>> {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    const TIMEOUT: Duration = Duration::from_secs(10);
+
+    let mut child = Command::new(tool)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + TIMEOUT;
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Some(Ok(())),
+            Ok(Some(_)) => {
+                let mut stderr = String::new();
+                if let Some(mut pipe) = child.stderr.take() {
+                    let _ = pipe.read_to_string(&mut stderr);
+                }
+                return Some(Err(format!("{} failed: {}", tool, stderr.trim())));
+            }
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Some(Err(format!(
+                    "{} timed out after {}s",
+                    tool,
+                    TIMEOUT.as_secs()
+                )));
+            }
+            Err(e) => return Some(Err(format!("{} failed: {}", tool, e))),
+        }
+    }
+}
+
+/// Capture the screen through the XDG desktop portal
+/// (org.freedesktop.portal.Screenshot) and move the result to `dest`.
+/// The portal replies asynchronously: the method call returns a request
+/// handle, and the file's URI arrives later in a Response signal on it.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn capture_via_portal(dest: &std::path::Path) -> Result<(), String> {
+    use gio::prelude::*;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    const PORTAL: &str = "org.freedesktop.portal.Desktop";
+    // Generous: the first request may put up a permission prompt.
+    const TIMEOUT: Duration = Duration::from_secs(30);
+
+    // The Response signal is delivered to whichever main context is the
+    // thread default at subscribe time. Use a private one so this works from
+    // the precapture thread and never touches the GTK main loop.
+    let ctx = glib::MainContext::new();
+    ctx.with_thread_default(|| -> Result<(), String> {
+        let conn = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE)
+            .map_err(|e| format!("session bus unavailable: {}", e))?;
+        let name = conn.unique_name().ok_or("no D-Bus unique name")?;
+        let token = format!("snap{}", std::process::id());
+        let handle = format!(
+            "/org/freedesktop/portal/desktop/request/{}/{}",
+            name.trim_start_matches(':').replace('.', "_"),
+            token
+        );
+
+        // Subscribe before calling so the Response cannot be missed.
+        let response: Arc<Mutex<Option<(u32, Option<String>)>>> = Arc::new(Mutex::new(None));
+        let slot = response.clone();
+        let subscription = conn.signal_subscribe(
+            Some(PORTAL),
+            Some("org.freedesktop.portal.Request"),
+            Some("Response"),
+            Some(&handle),
+            None,
+            gio::DBusSignalFlags::NONE,
+            move |_, _, _, _, _, params| {
+                if let Some((code, results)) = params.get::<(u32, glib::VariantDict)>() {
+                    let uri = results.lookup::<String>("uri").ok().flatten();
+                    if let Ok(mut slot) = slot.lock() {
+                        *slot = Some((code, uri));
+                    }
+                }
+            },
+        );
+
+        let options = glib::VariantDict::new(None);
+        options.insert_value("handle_token", &token.to_variant());
+        options.insert_value("interactive", &false.to_variant());
+        let args = glib::Variant::tuple_from_iter(["".to_variant(), options.end()]);
+
+        let outcome = conn
+            .call_sync(
+                Some(PORTAL),
+                "/org/freedesktop/portal/desktop",
+                "org.freedesktop.portal.Screenshot",
+                "Screenshot",
+                Some(&args),
+                None,
+                gio::DBusCallFlags::NONE,
+                5000,
+                gio::Cancellable::NONE,
+            )
+            .map_err(|e| format!("Screenshot call failed: {}", e))
+            .and_then(|_| {
+                let deadline = Instant::now() + TIMEOUT;
+                loop {
+                    while ctx.iteration(false) {}
+                    if let Some(reply) = response.lock().ok().and_then(|mut r| r.take()) {
+                        break Ok(reply);
+                    }
+                    if Instant::now() >= deadline {
+                        let _ = conn.call_sync(
+                            Some(PORTAL),
+                            &handle,
+                            "org.freedesktop.portal.Request",
+                            "Close",
+                            None,
+                            None,
+                            gio::DBusCallFlags::NONE,
+                            1000,
+                            gio::Cancellable::NONE,
+                        );
+                        break Err(format!("no response after {}s", TIMEOUT.as_secs()));
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            });
+
+        conn.signal_unsubscribe(subscription);
+        while ctx.iteration(false) {}
+
+        let (code, uri) = outcome?;
+        if code != 0 {
+            return Err(format!("request denied or cancelled (response {})", code));
+        }
+        let uri = uri.ok_or("response carried no file")?;
+        let src = gio::File::for_uri(&uri)
+            .path()
+            .ok_or_else(|| format!("not a local file: {}", uri))?;
+
+        // The portal saves into the user's Pictures folder. Move the file out
+        // so captures do not pile up there; rename fails across filesystems.
+        if fs::rename(&src, dest).is_err() {
+            fs::copy(&src, dest).map_err(|e| format!("cannot copy {}: {}", src.display(), e))?;
+            let _ = fs::remove_file(&src);
+        }
+        Ok(())
+    })
+    .map_err(|e| format!("cannot acquire a main context: {}", e))?
 }
 
 // ----- Window Context -----

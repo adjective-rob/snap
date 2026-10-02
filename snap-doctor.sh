@@ -21,6 +21,36 @@ DESKTOP="${XDG_CURRENT_DESKTOP:-unknown}"
 echo "Platform: $OS, session $SESSION, desktop $DESKTOP"
 echo ""
 
+# Take a silent screenshot through the XDG desktop portal, the way the app
+# does, and move it to $1. Fails if the portal is missing or refuses.
+portal_capture() {
+    timeout 15 python3 - "$1" <<'PY' 2>/dev/null
+import os, shutil, sys
+from gi.repository import Gio, GLib
+PORTAL = "org.freedesktop.portal.Desktop"
+bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+token = "snapdoctor%d" % os.getpid()
+handle = "/org/freedesktop/portal/desktop/request/%s/%s" % (
+    bus.get_unique_name()[1:].replace(".", "_"), token)
+loop = GLib.MainLoop()
+reply = []
+def on_response(conn, sender, path, iface, signal, params):
+    reply.append(params.unpack())
+    loop.quit()
+bus.signal_subscribe(PORTAL, "org.freedesktop.portal.Request", "Response",
+                     handle, None, Gio.DBusSignalFlags.NONE, on_response)
+options = {"handle_token": GLib.Variant("s", token), "interactive": GLib.Variant("b", False)}
+bus.call_sync(PORTAL, "/org/freedesktop/portal/desktop", "org.freedesktop.portal.Screenshot",
+              "Screenshot", GLib.Variant("(sa{sv})", ("", options)), None,
+              Gio.DBusCallFlags.NONE, 5000, None)
+GLib.timeout_add_seconds(10, loop.quit)
+loop.run()
+if not reply or reply[0][0] != 0:
+    sys.exit(1)
+shutil.move(Gio.File.new_for_uri(reply[0][1]["uri"]).get_path(), sys.argv[1])
+PY
+}
+
 # Binary
 if [ -x "$BINARY" ]; then ok "app built: $BINARY"; else bad "app not built"; note "run: make build"; fi
 
@@ -29,13 +59,17 @@ if [ "$OS" = "Linux" ]; then
     tmp="$(mktemp --suffix=.png)"; rm -f "$tmp"
     tool=""
     if [ "$SESSION" = "wayland" ]; then
+        # Same order as the app: desktop portal, then the capture tools. The
+        # timeouts matter: on GNOME 50+ gnome-screenshot hangs instead of failing.
+        if portal_capture "$tmp" && [ -s "$tmp" ]; then tool="portal"; fi
         for t in gnome-screenshot grim; do
+            [ -n "$tool" ] && break
             if command -v "$t" >/dev/null 2>&1; then
                 case $t in
-                    gnome-screenshot) "$t" --file="$tmp" 2>/dev/null ;;
-                    grim) "$t" "$tmp" 2>/dev/null ;;
+                    gnome-screenshot) timeout 10 "$t" --file="$tmp" 2>/dev/null ;;
+                    grim) timeout 10 "$t" "$tmp" 2>/dev/null ;;
                 esac
-                if [ -s "$tmp" ]; then tool="$t"; break; fi
+                if [ -s "$tmp" ]; then tool="$t"; fi
             fi
         done
     else
@@ -46,7 +80,7 @@ if [ "$OS" = "Linux" ]; then
         ok "screen capture works via $tool (${size:-?})"
     else
         bad "no working screen capture tool"
-        if [ "$SESSION" = "wayland" ]; then note "GNOME: sudo apt install gnome-screenshot    wlroots: sudo apt install grim";
+        if [ "$SESSION" = "wayland" ]; then note "GNOME 50+: needs xdg-desktop-portal-gnome    older GNOME: sudo apt install gnome-screenshot    wlroots: sudo apt install grim";
         else note "sudo apt install scrot"; fi
     fi
     rm -f "$tmp"
