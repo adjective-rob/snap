@@ -47,6 +47,5 @@ cd mcp-server && .venv/bin/python -m unittest discover -s tests
 
 - Releases: pushing a `v*.*.*` tag runs `.github/workflows/release.yml`, which builds Linux, macOS (arm64 + x86_64), and Windows and attaches the files to a GitHub release. `install.sh` downloads those assets by name (`snap-linux-x86_64`, `snap-macos-<arch>.zip`); keep the names in sync.
 - Root scripts (`install.sh`, `snap-trigger.sh`, `install-hotkey.sh`, `setup-mcp.sh`, `snap-doctor.sh`) resolve the repo from their own location and are referenced by absolute path from users' hotkey and MCP configs. Do not move them.
-- `tasks/` holds design specs; `tasks/README.md` says which are implemented.
 
 Important: Always use `npx tauri build` or `make build`, never bare `cargo build`. The Tauri build embeds the frontend files into the binary. `cargo build` alone produces a binary with no frontend.

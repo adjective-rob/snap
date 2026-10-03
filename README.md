@@ -309,7 +309,6 @@ snap/
   snap.service              systemd user service (X11 tray mode)
   snap.plist                launchd agent template (macOS, installed by make install)
   .github/workflows/        Release build for Linux, macOS, Windows, triggered by v*.*.* tags
-  tasks/                    Design notes and task specs (see tasks/README.md)
   Makefile                  Build, install, hotkey, doctor, start/stop commands
   CLAUDE.md                 Project instructions for Claude Code
   SETUP.md                  Detailed setup guide (Linux)

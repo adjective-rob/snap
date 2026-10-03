@@ -29,6 +29,9 @@ Thumbs.db
 *.lock
 !app/src-tauri/Cargo.lock
 
+# Local working notes (agent task specs)
+tasks/
+
 # Editor
 .vscode/
 .idea/
