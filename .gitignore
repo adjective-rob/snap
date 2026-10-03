@@ -27,6 +27,7 @@ Thumbs.db
 
 # Lock files from overlay
 *.lock
+!app/src-tauri/Cargo.lock
 
 # Editor
 .vscode/
