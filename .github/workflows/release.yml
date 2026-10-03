@@ -37,7 +37,7 @@ jobs:
           - name: windows-x86_64
             os: windows-latest
             target: ''
-            args: ''
+            args: --bundles nsis
 
     steps:
       - uses: actions/checkout@v4
