@@ -2,7 +2,7 @@
 
 Step-by-step instructions to build, install, and configure Snap on Linux. For macOS and Windows, see the [README](README.md#macos-quick-install); the [Register the MCP Server](#register-the-mcp-server) section below applies to every platform.
 
-The short version is `make deps && make install && ./setup-mcp.sh`, then `./snap-doctor.sh` to check the result. The rest of this guide explains each step and how to do it by hand.
+The short version is the one-line installer in the [README](README.md#quick-start), or from a clone `make deps && make install && ./setup-mcp.sh`, then `./snap-doctor.sh` to check the result. The rest of this guide explains each step and how to do it by hand.
 
 ---
 

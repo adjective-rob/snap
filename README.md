@@ -116,6 +116,16 @@ All annotation coordinates and sizes are in pixels of the saved PNG (`image_size
 
 ## Quick Start
 
+One command on Linux or macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/adjective-rob/snap/main/install.sh | bash
+```
+
+It clones the repo to `~/.local/share/snap-annotate`, downloads the prebuilt app from the latest [release](https://github.com/adjective-rob/snap/releases) (or builds from source if there is none for your platform), sets up the hotkey, and registers the MCP server with Claude Code, Claude Desktop, Cursor, and Windsurf. Re-run it to update. On Windows, download the installer from the releases page (see [Windows](#windows)).
+
+Or from a clone, step by step:
+
 ```bash
 # Install system deps (Ubuntu/Debian)
 make deps
@@ -141,6 +151,8 @@ For detailed Linux setup instructions, see **[SETUP.md](SETUP.md)**. macOS and W
 ---
 
 ## macOS Quick Install
+
+`install.sh` above does all of this for you. By hand:
 
 ```bash
 # 1) Build app
@@ -178,7 +190,7 @@ npm install
 npx tauri build
 ```
 
-The NSIS installer lands in `app\src-tauri\target\release\bundle\nsis\`. Pushing a `v*.*.*` tag builds the same installer in GitHub Actions and attaches it to a release.
+The NSIS installer lands in `app\src-tauri\target\release\bundle\nsis\`. Each [release](https://github.com/adjective-rob/snap/releases) carries the same installer, built in GitHub Actions.
 
 `setup-mcp.sh` is a bash script, so register the MCP server by hand: install it with `uv venv .venv` and `uv pip install -e .` inside `mcp-server\`, then point your MCP client at `mcp-server\.venv\Scripts\python.exe` with `mcp-server\server.py` as the argument (see [Manual Setup](SETUP.md#manual-setup)).
 
@@ -289,13 +301,14 @@ snap/
     pyproject.toml          Package metadata + fastmcp dependency
     .venv/                  Python virtual environment (created during setup)
 
+  install.sh                One-command installer (Linux, macOS): prebuilt app or source build
   snap-trigger.sh           Hotkey trigger script (Wayland): launches one overlay
   install-hotkey.sh         Registers the GNOME keybinding (keeps other shortcuts)
   setup-mcp.sh              Registers the MCP server with Claude Code, Claude Desktop, Cursor, Windsurf
   snap-doctor.sh            Checks capture tool, display, hotkey, MCP registration
   snap.service              systemd user service (X11 tray mode)
   snap.plist                launchd agent template (macOS, installed by make install)
-  .github/workflows/        Windows release build, triggered by v*.*.* tags
+  .github/workflows/        Release build for Linux, macOS, Windows, triggered by v*.*.* tags
   tasks/                    Design notes and task specs (see tasks/README.md)
   Makefile                  Build, install, hotkey, doctor, start/stop commands
   CLAUDE.md                 Project instructions for Claude Code
