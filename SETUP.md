@@ -1,6 +1,8 @@
 # Snap Setup Guide
 
-Step-by-step instructions to build, install, and configure Snap on Linux.
+Step-by-step instructions to build, install, and configure Snap on Linux. For macOS and Windows, see the [README](README.md#macos-quick-install); the [Register the MCP Server](#register-the-mcp-server) section below applies to every platform.
+
+The short version is `make deps && make install && ./setup-mcp.sh`, then `./snap-doctor.sh` to check the result. The rest of this guide explains each step and how to do it by hand.
 
 ---
 
@@ -170,6 +172,8 @@ bindsym Ctrl+Shift+s exec ~/Desktop/snap/snap-trigger.sh
 bind = CTRL SHIFT, S, exec, ~/Desktop/snap/snap-trigger.sh
 ```
 
+Replace `~/Desktop/snap` with wherever you cloned the repo; `make hotkey` prints these lines with the right path.
+
 ---
 
 ## Register the MCP Server
@@ -291,15 +295,16 @@ You have access to the `snap` MCP tools for reading annotated screenshots.
 
 ### Tools:
 - `check_new_annotations()` — call at the start of every task to see if there's visual feedback
-- `get_latest_annotation()` — returns the most recent annotated screenshot path + metadata
-- `list_annotations(last_n)` — returns recent annotations
+- `get_latest_annotation()` — returns the most recent annotated screenshot (attached as an image) + metadata
+- `list_annotations(last_n)` — returns recent annotations (pass `include_image=true` to attach the screenshots)
 - `get_annotation(filename)` — returns a specific annotation
 - `clear_inbox()` — deletes processed annotations
 
 ### When to use:
 - At the START of any UI/frontend task, call `check_new_annotations()` first
 - If the user says "look at my annotation" or "check my snap", call `get_latest_annotation()`
-- After getting metadata, READ THE IMAGE at `image_path` to see the annotated screenshot
+- Look at the attached screenshot; if no image came back, READ THE IMAGE at `image_path`
+- Annotation coordinates in the metadata are pixels of that image
 - Use `source.window_title` to infer which page/component the user was looking at
 
 ### How to interpret:
@@ -324,10 +329,11 @@ This project uses Snap for visual annotations. Call `check_new_annotations()` at
 | Path | Purpose |
 |------|---------|
 | `~/.snap/inbox/` | Annotated screenshots + sidecar JSON |
-| `~/.snap/snap.log` | Event log (auto-rotates at 1MB) |
+| `~/.snap/snap.log` | Event log (auto-rotates at 1MB, one backup at `snap.log.old`) |
 | `~/.snap/.last_read` | MCP server's read cursor (tracks which annotations are "new") |
-| `/tmp/snap-capture.png` | Temporary screen capture (overwritten each time) |
-| `/tmp/snap-overlay.lock` | Lock file preventing concurrent overlays |
+| `~/.snap/snap-tray.lock` | Keeps a second tray app from starting (tray mode only) |
+| `/tmp/snap-capture.png` | Temporary screen capture (in `$TMPDIR` if set; overwritten each time) |
+| `/tmp/snap-overlay.lock` | Lock file preventing concurrent overlays (Wayland trigger script) |
 
 ---
 
@@ -436,8 +442,8 @@ Won't happen — both the Rust app and MCP server auto-rotate `~/.snap/snap.log`
 ## Uninstall
 
 ```bash
-# Remove GNOME keybinding (Wayland)
-gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "[]"
+# Remove GNOME keybinding (Wayland); leaves your other custom shortcuts alone
+./install-hotkey.sh --remove
 
 # Remove systemd service (X11)
 systemctl --user stop snap.service
@@ -446,6 +452,8 @@ rm ~/.config/systemd/user/snap.service
 
 # Remove MCP server from Claude Code
 claude mcp remove snap
+# (Claude Desktop, Cursor, Windsurf: delete the "snap" entry from the config
+#  files listed under Manual Setup)
 
 # Remove Snap data
 rm -rf ~/.snap

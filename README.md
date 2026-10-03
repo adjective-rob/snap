@@ -101,7 +101,7 @@ All annotation coordinates and sizes are in pixels of the saved PNG (`image_size
 | `D` | Toggle dim layer (darkens background for contrast) |
 | `Ctrl+Z` | Undo last annotation |
 | `Enter` | Save annotated screenshot and close |
-| `Escape` | Cancel (discard) and close |
+| `Escape` | Abort the shape or region being dragged; otherwise discard and close |
 
 ### Toolbar
 
@@ -109,6 +109,8 @@ All annotation coordinates and sizes are in pixels of the saved PNG (`image_size
 - **3 stroke widths**: Thin (2px), Medium (4px, default), Thick (6px)
 - **Draggable**: Grab the handle on the left to reposition the toolbar
 - **Dim toggle**: Adds a dark overlay behind annotations for readability on busy screens
+- **Undo / Clear**: Remove the last annotation, or all of them
+- **Save**: The green checkmark, same as `Enter`
 
 ---
 
@@ -134,7 +136,7 @@ Press `Ctrl+Shift+S`, draw (drag a region first if you only want part of the scr
 
 To use a different key: `SNAP_HOTKEY='<Super><Shift>s' make hotkey`. Sway and Hyprland users bind a key to `snap-trigger.sh` by hand; `make hotkey` prints the line.
 
-For detailed setup instructions, see **[SETUP.md](SETUP.md)**.
+For detailed Linux setup instructions, see **[SETUP.md](SETUP.md)**. macOS and Windows are covered below.
 
 ---
 
@@ -155,7 +157,7 @@ First run:
 - Press `Ctrl+Shift+S` once to trigger permission prompts.
 - Allow Screen Recording/Automation/Accessibility if asked.
 
-You can also add this to start-up to ensure it runs headless on each login. 
+To start Snap on every login, run `make install` after copying the app: it installs a LaunchAgent (`~/Library/LaunchAgents/com.adjective.snap.plist`) that opens `/Applications/snap.app` in the background. Then run `./setup-mcp.sh` to register the MCP server.
 
 If permissions get stuck:
 
@@ -163,6 +165,22 @@ If permissions get stuck:
 tccutil reset All com.adjective.snap
 open -a /Applications/snap.app
 ```
+
+---
+
+## Windows
+
+Snap runs as a tray app on Windows with the same `Ctrl+Shift+S` hotkey. There is no `make` flow; build with the Tauri CLI (needs Rust, Node.js, and the WebView2 runtime that ships with Windows 11):
+
+```powershell
+cd app
+npm install
+npx tauri build
+```
+
+The NSIS installer lands in `app\src-tauri\target\release\bundle\nsis\`. Pushing a `v*.*.*` tag builds the same installer in GitHub Actions and attaches it to a release.
+
+`setup-mcp.sh` is a bash script, so register the MCP server by hand: install it with `uv venv .venv` and `uv pip install -e .` inside `mcp-server\`, then point your MCP client at `mcp-server\.venv\Scripts\python.exe` with `mcp-server\server.py` as the argument (see [Manual Setup](SETUP.md#manual-setup)).
 
 ---
 
@@ -251,30 +269,45 @@ snap/
     src/                    Vanilla HTML/CSS/JS frontend
       index.html            Toolbar + canvas markup
       main.js               Drawing engine, save logic, DPI handling
+      export-scale.mjs      Window-to-image coordinate math (crop, layout, sidecar)
+      export-scale.test.mjs Tests for the above (node --test)
       styles.css            Toolbar styling, animations
     src-tauri/              Rust backend
       src/
-        main.rs             App lifecycle (tray mode on X11, overlay mode on Wayland)
+        main.rs             App lifecycle (tray mode on X11/macOS/Windows, overlay mode on Wayland)
         lib.rs              Screen capture, window context, save handler, logging
       Cargo.toml            Rust dependencies
-      tauri.conf.json       Window config, asset protocol, permissions
+      tauri.conf.json       App identifier, frontend path
+      Info.plist            macOS usage descriptions, hides the Dock icon
       capabilities/         Tauri 2 permission definitions
       icons/                Tray icon
     package.json            Node dependencies (@tauri-apps/api, @tauri-apps/cli)
 
   mcp-server/               Python MCP server
     server.py               5 tools: check, get_latest, list, get, clear
-    pyproject.toml           Package metadata + fastmcp dependency
+    tests/                  Tool-level tests through an in-memory MCP client
+    pyproject.toml          Package metadata + fastmcp dependency
     .venv/                  Python virtual environment (created during setup)
 
   snap-trigger.sh           Hotkey trigger script (Wayland): launches one overlay
   install-hotkey.sh         Registers the GNOME keybinding (keeps other shortcuts)
+  setup-mcp.sh              Registers the MCP server with Claude Code, Claude Desktop, Cursor, Windsurf
   snap-doctor.sh            Checks capture tool, display, hotkey, MCP registration
   snap.service              systemd user service (X11 tray mode)
+  snap.plist                launchd agent template (macOS, installed by make install)
+  .github/workflows/        Windows release build, triggered by v*.*.* tags
+  tasks/                    Design notes and task specs (see tasks/README.md)
   Makefile                  Build, install, hotkey, doctor, start/stop commands
   CLAUDE.md                 Project instructions for Claude Code
-  SETUP.md                  Detailed setup guide
+  SETUP.md                  Detailed setup guide (Linux)
   LICENSE                   MIT
+```
+
+### Tests
+
+```bash
+node --test app/src/export-scale.test.mjs
+cd mcp-server && .venv/bin/python -m unittest discover -s tests
 ```
 
 ### Platform Support
@@ -302,7 +335,7 @@ On Linux the overlay starts the screen capture the moment the process launches, 
 - All data stays local. Screenshots are saved to `~/.snap/inbox/` and nowhere else.
 - The MCP server is read-only over stdio. It never writes to the inbox, only reads and deletes.
 - No network calls. No telemetry. No cloud.
-- The screen capture uses your system's native screenshot path (the XDG desktop portal, `gnome-screenshot`, `scrot`, or `grim`).
+- The screen capture uses your system's native screenshot path (the XDG desktop portal, `gnome-screenshot`, `scrot`, or `grim` on Linux; `screencapture` on macOS; the `screenshots` crate on Windows).
 - Log file at `~/.snap/snap.log` (auto-rotates at 1MB). Contains timestamps and event names only, no image data.
 
 ---

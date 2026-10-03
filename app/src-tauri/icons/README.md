@@ -1,5 +1,5 @@
-This directory needs Tauri icon files. Generate them with:
+`icon.png` is the tray icon. It is embedded into the binary at compile time (`include_bytes!` in `src/main.rs`), so replacing it requires a rebuild.
 
-  cargo tauri icon path/to/your/icon.png
+To generate the full set of bundle icons from a source image:
 
-Or use the default Tauri icons for now. Claude Code Task 1 will handle this.
+    npx tauri icon path/to/icon.png

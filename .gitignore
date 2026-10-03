@@ -5,7 +5,8 @@ app/src-tauri/target/
 app/node_modules/
 
 # Python
-mcp-server/__pycache__/
+__pycache__/
+.pytest_cache/
 mcp-server/*.egg-info/
 mcp-server/.venv/
 

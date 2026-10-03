@@ -36,4 +36,16 @@ make dev            # Run in dev mode
 npx tauri build     # Rebuild Tauri app only (must use this, not cargo build alone)
 ```
 
+## Test
+
+```bash
+node --test app/src/export-scale.test.mjs
+cd mcp-server && .venv/bin/python -m unittest discover -s tests
+```
+
+## Layout
+
+- Root scripts (`snap-trigger.sh`, `install-hotkey.sh`, `setup-mcp.sh`, `snap-doctor.sh`) resolve the repo from their own location and are referenced by absolute path from users' hotkey and MCP configs. Do not move them.
+- `tasks/` holds design specs; `tasks/README.md` says which are implemented.
+
 Important: Always use `npx tauri build` or `make build`, never bare `cargo build`. The Tauri build embeds the frontend files into the binary. `cargo build` alone produces a binary with no frontend.
