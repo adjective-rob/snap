@@ -184,6 +184,14 @@ open -a /Applications/snap.app
 
 Snap runs as a tray app on Windows with the same `Ctrl+Shift+S` hotkey. There is no `make` flow; build with the Tauri CLI (needs Rust, Node.js, and the WebView2 runtime that ships with Windows 11):
 
+To install or update Snap, run this in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/adjective-rob/snap/main/install.ps1 | iex
+```
+
+It installs the latest Windows release, keeps the checkout under `%LOCALAPPDATA%\snap-annotate`, sets up the MCP server and any detected client configurations, and creates a Startup shortcut. Re-run it to update. Existing client settings are preserved; invalid JSON is reported without overwriting the file.
+
 ```powershell
 cd app
 npm install
@@ -359,6 +367,7 @@ On Linux the overlay starts the screen capture the moment the process launches, 
 ### Contributors
 
 - Alec Lucas — macOS port
+- Harshit Nagila — Windows installer
 - TangoKiloA — Windows support (screen capture, window context, tray)
 
 ## License
