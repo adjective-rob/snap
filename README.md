@@ -362,7 +362,8 @@ On Linux the overlay starts the screen capture the moment the process launches, 
 - The MCP server is read-only over stdio. It never writes to the inbox, only reads and deletes.
 - No network calls. No telemetry. No cloud.
 - The screen capture uses your system's native screenshot path (the XDG desktop portal, `gnome-screenshot`, `scrot`, or `grim` on Linux; `screencapture` on macOS; the `screenshots` crate on Windows).
-- Log file at `~/.snap/snap.log` (auto-rotates at 1MB). Contains timestamps and event names only, no image data.
+- Log file at `~/.snap/snap.log` (auto-rotates at 1MB). Contains timestamps, event names, and annotation filenames, no image data.
+- Found a security problem? Report it privately; see [SECURITY.md](SECURITY.md).
 
 ---
 
