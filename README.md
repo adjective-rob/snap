@@ -182,15 +182,15 @@ open -a /Applications/snap.app
 
 ## Windows
 
-Snap runs as a tray app on Windows with the same `Ctrl+Shift+S` hotkey. There is no `make` flow; build with the Tauri CLI (needs Rust, Node.js, and the WebView2 runtime that ships with Windows 11):
-
-To install or update Snap, run this in PowerShell:
+Snap runs as a tray app on Windows with the same `Ctrl+Shift+S` hotkey. To install or update it, run this in PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/adjective-rob/snap/main/install.ps1 | iex
 ```
 
-It installs the latest Windows release, keeps the checkout under `%LOCALAPPDATA%\snap-annotate`, sets up the MCP server and any detected client configurations, and creates a Startup shortcut. Re-run it to update. Existing client settings are preserved; invalid JSON is reported without overwriting the file.
+It installs the latest Windows release, keeps the checkout under `%LOCALAPPDATA%\snap-annotate`, sets up the MCP server, registers it with Claude Code, Claude Desktop, Cursor, and Windsurf if they are installed, and creates a Startup shortcut. Re-run it to update. Existing client settings are preserved; invalid JSON is reported without overwriting the file. It needs Git and either `uv` or Python 3.11+.
+
+To build from source instead, use the Tauri CLI (needs Rust, Node.js, and the WebView2 runtime that ships with Windows 11):
 
 ```powershell
 cd app
@@ -198,9 +198,7 @@ npm install
 npx tauri build
 ```
 
-The NSIS installer lands in `app\src-tauri\target\release\bundle\nsis\`. Each [release](https://github.com/adjective-rob/snap/releases) carries the same installer, built in GitHub Actions.
-
-`setup-mcp.sh` is a bash script, so register the MCP server by hand: install it with `uv venv .venv` and `uv pip install -e .` inside `mcp-server\`, then point your MCP client at `mcp-server\.venv\Scripts\python.exe` with `mcp-server\server.py` as the argument (see [Manual Setup](SETUP.md#manual-setup)).
+The NSIS installer lands in `app\src-tauri\target\release\bundle\nsis\`.
 
 ---
 

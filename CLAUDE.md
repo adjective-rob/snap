@@ -41,6 +41,7 @@ npx tauri build     # Rebuild Tauri app only (must use this, not cargo build alo
 ```bash
 node --test app/src/export-scale.test.mjs
 cd mcp-server && .venv/bin/python -m unittest discover -s tests
+pwsh -File tests/install-windows.ps1   # install.ps1 config merging (needs PowerShell 7+)
 ```
 
 ## Layout

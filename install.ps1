@@ -6,6 +6,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell 5.1 downloads crawl with the progress bar on.
+$ProgressPreference = 'SilentlyContinue'
 $repo = 'adjective-rob/snap'
 $installRoot = Join-Path $env:LOCALAPPDATA 'snap-annotate'
 $script:releaseTag = $null
@@ -80,15 +82,20 @@ function Merge-SnapServer([string] $ConfigPath) {
     Write-Host "Configured Snap MCP server in $ConfigPath"
 }
 
-function Install-LatestApp {
+function Get-LatestRelease {
     $releaseUrl = "https://api.github.com/repos/$repo/releases/latest"
     try {
-        $release = Invoke-RestMethod -Uri $releaseUrl -Headers @{ 'User-Agent' = 'Snap-Windows-Installer' }
+        return Invoke-RestMethod -Uri $releaseUrl -Headers @{ 'User-Agent' = 'Snap-Windows-Installer' }
     }
     catch {
-        Stop-Install "No published Snap release could be found at $releaseUrl. The Windows installer is published with tagged releases. $($_.Exception.Message)"
+        return $null
     }
-    $script:releaseTag = $release.tag_name
+}
+
+function Install-LatestApp($release) {
+    if ($null -eq $release) {
+        Stop-Install "No published Snap release could be found at https://github.com/$repo/releases. The Windows installer is published with tagged releases."
+    }
 
     $assets = @($release.assets | Where-Object { $_.name -match '(?i)^snap.*x64-setup\.exe$' })
     if ($assets.Count -ne 1) {
@@ -160,20 +167,20 @@ function Start-SnapInstall {
         Stop-Install "'$installRoot' exists but is not a Git checkout. Move it aside before installing Snap there."
     }
 
+    # Pin the checkout to the latest release so scripts and app match; main when there is none.
+    $release = Get-LatestRelease
+    if ($null -ne $release) { $script:releaseTag = $release.tag_name }
+    $ref = if ($script:releaseTag) { "refs/tags/$script:releaseTag" } else { 'main' }
+
     if (-not $SkipAppInstall) {
-        Install-LatestApp
+        Install-LatestApp $release
     }
     $appPath = Get-SnapExecutable
     if (-not $appPath) { Stop-Install 'Could not find snap.exe after installation. Check the installer location and rerun this script.' }
 
     if (Test-Path -LiteralPath (Join-Path $installRoot '.git')) {
-        if ($script:releaseTag) {
-            Invoke-Checked 'git' @('-C', $installRoot, 'fetch', '--depth', '1', 'origin', "refs/tags/$script:releaseTag")
-            Invoke-Checked 'git' @('-C', $installRoot, 'checkout', '--detach', 'FETCH_HEAD')
-        }
-        else {
-            Invoke-Checked 'git' @('-C', $installRoot, 'pull', '--ff-only')
-        }
+        Invoke-Checked 'git' @('-C', $installRoot, 'fetch', '--depth', '1', 'origin', $ref)
+        Invoke-Checked 'git' @('-C', $installRoot, 'checkout', '--detach', 'FETCH_HEAD')
     }
     else {
         if (Test-Path -LiteralPath $installRoot) {
@@ -198,6 +205,8 @@ function Start-SnapInstall {
 
     $claude = Get-Command claude -ErrorAction SilentlyContinue
     if ($null -ne $claude) {
+        # add fails if snap is already registered, so remove it first and ignore a miss.
+        & $claude.Source mcp remove --scope user snap 2>$null | Out-Null
         Invoke-Checked $claude.Source @('mcp', 'add', '--scope', 'user', '--transport', 'stdio', 'snap', '--', $venvPython, $serverPath)
     }
     Merge-SnapServer (Join-Path $env:APPDATA 'Claude\claude_desktop_config.json')
