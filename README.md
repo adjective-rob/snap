@@ -14,6 +14,18 @@ You see a bug  -->  Ctrl+Shift+S  -->  Circle it, type "fix this"  -->  Enter
                                               Claude Code reads it via MCP  -->  Fix applied
 ```
 
+## Install
+
+**Linux or macOS**, one command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/adjective-rob/snap/main/install.sh | bash
+```
+
+**Windows:** download `snap_<version>_x64-setup.exe` from the [latest release](https://github.com/adjective-rob/snap/releases/latest) and run it, then [register the MCP server](#windows).
+
+Then press `Ctrl+Shift+S`, draw, hit Enter, and tell your agent: *"check my latest snap annotation"*. Details in [Quick Start](#quick-start).
+
 ---
 
 ## How It Works
@@ -182,7 +194,9 @@ open -a /Applications/snap.app
 
 ## Windows
 
-Snap runs as a tray app on Windows with the same `Ctrl+Shift+S` hotkey. There is no `make` flow; build with the Tauri CLI (needs Rust, Node.js, and the WebView2 runtime that ships with Windows 11):
+Snap runs as a tray app on Windows with the same `Ctrl+Shift+S` hotkey. To install, download `snap_<version>_x64-setup.exe` from the [latest release](https://github.com/adjective-rob/snap/releases/latest) and run it.
+
+To build from source instead, use the Tauri CLI (needs Rust, Node.js, and the WebView2 runtime that ships with Windows 11):
 
 ```powershell
 cd app
