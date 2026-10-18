@@ -122,6 +122,15 @@ class AnnotationToolTests(unittest.TestCase):
         result = self._call("get_annotation", filename="snap-nope")
         self.assertIn("error", result.structured_content)
 
+    def test_get_annotation_rejects_paths_outside_inbox(self):
+        outside = self.home / "secret"
+        outside.with_suffix(".json").write_text(json.dumps({"annotations": []}))
+        outside.with_suffix(".png").write_bytes(self.png_bytes)
+        for name in ["../../secret", str(outside)]:
+            result = self._call("get_annotation", filename=name)
+            self.assertIn("error", result.structured_content)
+            self.assertEqual(self._images(result), [])
+
 
 if __name__ == "__main__":
     unittest.main()

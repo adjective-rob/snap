@@ -203,7 +203,8 @@ def get_annotation(
     Example: get_annotation('snap-20260408-142300')"""
     _log(f"get_annotation called: {filename}")
     json_path = INBOX / f"{filename}.json"
-    if not json_path.exists():
+    # Only plain names inside the inbox; "../" or an absolute path must not reach other files.
+    if json_path.resolve().parent != INBOX.resolve() or not json_path.exists():
         return ToolResult(structured_content={"error": f"Annotation '{filename}' not found"})
     data = _load_annotation(json_path)
     return _annotation_result(data, [data], include_image, max_image_bytes)
