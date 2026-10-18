@@ -41,11 +41,12 @@ npx tauri build     # Rebuild Tauri app only (must use this, not cargo build alo
 ```bash
 node --test app/src/export-scale.test.mjs
 cd mcp-server && .venv/bin/python -m unittest discover -s tests
+pwsh -File tests/install-windows.ps1   # install.ps1 config merging (needs PowerShell 7+)
 ```
 
 ## Layout
 
 - Releases: pushing a `v*.*.*` tag runs `.github/workflows/release.yml`, which builds Linux, macOS (arm64 + x86_64), and Windows and attaches the files to a GitHub release. `install.sh` downloads those assets by name (`snap-linux-x86_64`, `snap-macos-<arch>.zip`); keep the names in sync.
-- Root scripts (`install.sh`, `snap-trigger.sh`, `install-hotkey.sh`, `setup-mcp.sh`, `snap-doctor.sh`) resolve the repo from their own location and are referenced by absolute path from users' hotkey and MCP configs. Do not move them.
+- Root scripts (`install.sh`, `install.ps1`, `snap-trigger.sh`, `install-hotkey.sh`, `setup-mcp.sh`, `snap-doctor.sh`) resolve the repo from their own location and are referenced by absolute path from users' hotkey and MCP configs. Do not move them.
 
 Important: Always use `npx tauri build` or `make build`, never bare `cargo build`. The Tauri build embeds the frontend files into the binary. `cargo build` alone produces a binary with no frontend.
