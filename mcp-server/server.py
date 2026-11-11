@@ -1,5 +1,6 @@
 import json
 import os
+import stat
 import time
 from pathlib import Path
 
@@ -33,12 +34,57 @@ def _log(msg: str):
         pass
 
 
+# Inbox files are only read if they are regular files sitting directly in the
+# inbox. A symlink (or junction) named like an annotation could otherwise point
+# the MCP client at any file the user can read.
+_OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+
+
+def _inbox_entry_problem(path: Path) -> str | None:
+    """Return why `path` must not be read, or None if it is a plain inbox file."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return "missing"
+    except OSError as e:
+        return f"unreadable: {e}"
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        return "not a regular file (symlinks are not followed)"
+    try:
+        if path.resolve().parent != INBOX.resolve():
+            return "outside the inbox"
+    except OSError as e:
+        return f"unreadable: {e}"
+    return None
+
+
+def _read_inbox_file(path: Path, max_bytes: int | None = None) -> bytes:
+    """Read a plain inbox file without following links.
+
+    Raises OSError if the file is not a regular file inside the inbox, or
+    ValueError if it is larger than `max_bytes`. The check is repeated on the
+    open descriptor so a file swapped in after the check is not read.
+    """
+    problem = _inbox_entry_problem(path)
+    if problem:
+        raise OSError(problem)
+    fd = os.open(path, _OPEN_FLAGS)
+    with os.fdopen(fd, "rb") as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError("not a regular file")
+        if max_bytes is not None and st.st_size > max_bytes:
+            raise ValueError(st.st_size)
+        return f.read()
+
+
 def _load_annotation(json_path: Path) -> dict:
     """Load a sidecar JSON and attach the image path."""
     try:
-        with open(json_path) as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, OSError) as e:
+        data = json.loads(_read_inbox_file(json_path))
+        if not isinstance(data, dict):
+            raise ValueError("sidecar is not a JSON object")
+    except (ValueError, OSError) as e:
         return {
             "filename": json_path.stem,
             "error": f"corrupt or unreadable: {e}",
@@ -46,11 +92,15 @@ def _load_annotation(json_path: Path) -> dict:
         }
 
     png_path = json_path.with_suffix(".png")
-    data["image_path"] = str(png_path) if png_path.exists() else None
+    problem = _inbox_entry_problem(png_path)
+    data["image_path"] = None if problem else str(png_path)
     data["filename"] = json_path.stem
 
-    if not png_path.exists():
+    if problem == "missing":
         data["warning"] = "image file missing"
+    elif problem:
+        data["warning"] = f"image file rejected: {problem}"
+        _log(f"rejected image {png_path.name}: {problem}")
 
     return data
 
@@ -67,14 +117,14 @@ def _image_block(data: dict, max_image_bytes: int):
     if not image_path:
         return None
     try:
-        size = Path(image_path).stat().st_size
-        if size > max_image_bytes:
-            data["image_warning"] = (
-                f"image not attached: {size} bytes exceeds max_image_bytes={max_image_bytes}; "
-                "read it from image_path instead"
-            )
-            return None
-        return Image(path=image_path).to_image_content()
+        png = _read_inbox_file(Path(image_path), max_image_bytes)
+        return Image(data=png, format="png").to_image_content()
+    except ValueError as e:
+        data["image_warning"] = (
+            f"image not attached: {e.args[0]} bytes exceeds max_image_bytes={max_image_bytes}; "
+            "read it from image_path instead"
+        )
+        return None
     except OSError as e:
         data["image_warning"] = f"image not attached: {e}"
         return None
@@ -99,11 +149,24 @@ def _annotation_result(
     return ToolResult(content=content, structured_content=payload)
 
 
-def _list_annotations_sorted() -> list[Path]:
-    """Return all sidecar JSON files sorted newest first."""
+def _list_annotations_sorted(skipped: list[str] | None = None) -> list[Path]:
+    """Return all plain sidecar JSON files in the inbox, newest first.
+
+    Entries that are symlinks or not regular files are left out and their
+    names appended to `skipped`, if given.
+    """
     if not INBOX.exists():
         return []
-    return sorted(INBOX.glob("snap-*.json"), reverse=True)
+    files = []
+    for path in sorted(INBOX.glob("snap-*.json"), reverse=True):
+        problem = _inbox_entry_problem(path)
+        if problem:
+            _log(f"skipped {path.name}: {problem}")
+            if skipped is not None:
+                skipped.append(f"{path.name}: {problem}")
+            continue
+        files.append(path)
+    return files
 
 
 def _get_last_read() -> float:
@@ -135,7 +198,8 @@ def check_new_annotations() -> dict:
     at the start of UI tasks to see if the user has provided visual feedback."""
     _log("check_new_annotations called")
     last_read = _get_last_read()
-    files = _list_annotations_sorted()
+    skipped: list[str] = []
+    files = _list_annotations_sorted(skipped)
     new_files = []
     for f in files:
         try:
@@ -156,6 +220,8 @@ def check_new_annotations() -> dict:
 
     if total > 100:
         result["note"] = f"inbox has {total} files, consider clearing old annotations"
+    if skipped:
+        result["skipped"] = skipped
 
     return result
 
@@ -170,10 +236,16 @@ def get_latest_annotation(
     image content block. Agents that cannot receive images can read the file at
     image_path instead."""
     _log("get_latest_annotation called")
-    files = _list_annotations_sorted()
+    skipped: list[str] = []
+    files = _list_annotations_sorted(skipped)
     if not files:
-        return ToolResult(structured_content={"error": "No annotations in inbox"})
+        result = {"error": "No annotations in inbox"}
+        if skipped:
+            result["skipped"] = skipped
+        return ToolResult(structured_content=result)
     data = _load_annotation(files[0])
+    if skipped:
+        data["skipped"] = skipped
     _mark_read()
     return _annotation_result(data, [data], include_image, max_image_bytes)
 
@@ -187,10 +259,13 @@ def list_annotations(
     the image_path of the annotated screenshot; pass include_image=true to also
     attach the screenshots as image content blocks (in the same order)."""
     _log(f"list_annotations called (last_n={last_n})")
-    files = _list_annotations_sorted()[:last_n]
+    skipped: list[str] = []
+    files = _list_annotations_sorted(skipped)[:last_n]
     results = [_load_annotation(f) for f in files]
     _mark_read()
     payload = {"count": len(results), "annotations": results}
+    if skipped:
+        payload["skipped"] = skipped
     return _annotation_result(payload, results, include_image, max_image_bytes)
 
 
@@ -203,8 +278,9 @@ def get_annotation(
     Example: get_annotation('snap-20260408-142300')"""
     _log(f"get_annotation called: {filename}")
     json_path = INBOX / f"{filename}.json"
-    # Only plain names inside the inbox; "../" or an absolute path must not reach other files.
-    if json_path.resolve().parent != INBOX.resolve() or not json_path.exists():
+    # Only plain files directly inside the inbox: "../", an absolute path or a
+    # symlink must not reach other files. The PNG is checked the same way when loaded.
+    if json_path.parent != INBOX or _inbox_entry_problem(json_path):
         return ToolResult(structured_content={"error": f"Annotation '{filename}' not found"})
     data = _load_annotation(json_path)
     return _annotation_result(data, [data], include_image, max_image_bytes)
@@ -215,23 +291,33 @@ def clear_inbox() -> dict:
     """Delete all processed annotations from the inbox. Use after Claude Code
     has addressed all pending annotations."""
     _log("clear_inbox called")
-    files = _list_annotations_sorted()
+    # Unlinking never follows a symlink, so links are removed here too (their
+    # targets are left alone). os.path.lexists also sees dangling links.
+    files = sorted(INBOX.glob("snap-*.json"), reverse=True) if INBOX.exists() else []
     png_count = 0
     json_count = 0
+    removed_links = []
     errors = []
 
     for json_path in files:
         png_path = json_path.with_suffix(".png")
         try:
-            if png_path.exists():
-                png_path.unlink()
-                png_count += 1
-            json_path.unlink()
-            json_count += 1
+            for path in (png_path, json_path):
+                if not os.path.lexists(path):
+                    continue
+                if path.is_symlink():
+                    removed_links.append(path.name)
+                path.unlink()
+                if path is png_path:
+                    png_count += 1
+                else:
+                    json_count += 1
         except OSError as e:
             errors.append(f"{json_path.name}: {e}")
 
     result = {"deleted_json": json_count, "deleted_png": png_count}
+    if removed_links:
+        result["removed_links"] = removed_links
     if errors:
         result["errors"] = errors
 

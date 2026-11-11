@@ -14,7 +14,7 @@ from pathlib import Path
 from fastmcp import Client
 
 
-class AnnotationToolTests(unittest.TestCase):
+class InboxTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -61,6 +61,8 @@ class AnnotationToolTests(unittest.TestCase):
     def _text_json(result):
         return json.loads(next(b.text for b in result.content if b.type == "text"))
 
+
+class AnnotationToolTests(InboxTestCase):
     def test_latest_returns_image_block_and_metadata(self):
         result = self._call("get_latest_annotation")
 
@@ -130,6 +132,111 @@ class AnnotationToolTests(unittest.TestCase):
             result = self._call("get_annotation", filename=name)
             self.assertIn("error", result.structured_content)
             self.assertEqual(self._images(result), [])
+
+
+class SymlinkTests(InboxTestCase):
+    """Links planted in the inbox must not expose files outside it.
+
+    Creating symlinks needs Developer Mode or admin rights on Windows, so these
+    tests skip there when the OS refuses.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.outside = self.home / "outside"
+        self.outside.mkdir()
+        self.secret_png = b"\x89PNG\r\n\x1a\nOUTSIDE-SECRET"
+        (self.outside / "secret.png").write_bytes(self.secret_png)
+        (self.outside / "secret.json").write_text(json.dumps({"secret": "OUTSIDE-SECRET"}))
+
+    def _link(self, name: str, target: Path, is_dir: bool = False):
+        try:
+            os.symlink(target, self.inbox / name, target_is_directory=is_dir)
+        except (OSError, NotImplementedError) as e:
+            self.skipTest(f"cannot create symlinks here: {e}")
+
+    def _assert_no_leak(self, result):
+        text = json.dumps(self._text_json(result)) if result.content else ""
+        self.assertNotIn("OUTSIDE-SECRET", text)
+        self.assertNotIn("OUTSIDE-SECRET", json.dumps(result.structured_content or {}))
+        for img in self._images(result):
+            self.assertNotEqual(base64.b64decode(img.data), self.secret_png)
+
+    def test_latest_skips_linked_json(self):
+        self._link("snap-20990109-000000-000.json", self.outside / "secret.json")
+        self._link("snap-20990109-000000-000.png", self.outside / "secret.png")
+        result = self._call("get_latest_annotation")
+        self._assert_no_leak(result)
+        data = self._text_json(result)
+        self.assertEqual(data["filename"], self.newer.name)
+        self.assertTrue(any("snap-20990109" in s for s in data["skipped"]))
+
+    def test_latest_rejects_linked_png_next_to_real_json(self):
+        stem = "snap-20990109-000000-000"
+        (self.inbox / f"{stem}.json").write_text(json.dumps({"annotations": []}))
+        self._link(f"{stem}.png", self.outside / "secret.png")
+        result = self._call("get_latest_annotation")
+        self._assert_no_leak(result)
+        data = self._text_json(result)
+        self.assertEqual(data["filename"], stem)
+        self.assertIsNone(data["image_path"])
+        self.assertIn("image file rejected", data["warning"])
+        self.assertEqual(self._images(result), [])
+
+    def test_list_skips_links(self):
+        self._link("snap-20990109-000000-000.json", self.outside / "secret.json")
+        stem = "snap-20990108-000000-000"
+        (self.inbox / f"{stem}.json").write_text(json.dumps({"annotations": []}))
+        self._link(f"{stem}.png", self.outside / "secret.png")
+        result = self._call("list_annotations", last_n=10, include_image=True)
+        self._assert_no_leak(result)
+        data = self._text_json(result)
+        self.assertEqual(
+            [a["filename"] for a in data["annotations"]],
+            [stem, self.newer.name, self.older.name],
+        )
+        self.assertEqual(len(self._images(result)), 2)
+        self.assertEqual(len(data["skipped"]), 1)
+
+    def test_list_skips_linked_directory(self):
+        self._link("snap-20990109-000000-000.json", self.outside, is_dir=True)
+        result = self._call("list_annotations", last_n=10)
+        data = self._text_json(result)
+        self.assertEqual(data["count"], 2)
+        self.assertEqual(len(data["skipped"]), 1)
+
+    def test_get_annotation_rejects_linked_json(self):
+        self._link("snap-20990109-000000-000.json", self.outside / "secret.json")
+        result = self._call("get_annotation", filename="snap-20990109-000000-000")
+        self.assertIn("error", result.structured_content)
+        self._assert_no_leak(result)
+
+    def test_get_annotation_rejects_linked_png(self):
+        stem = "snap-20990109-000000-000"
+        (self.inbox / f"{stem}.json").write_text(json.dumps({"annotations": []}))
+        self._link(f"{stem}.png", self.outside / "secret.png")
+        result = self._call("get_annotation", filename=stem)
+        self._assert_no_leak(result)
+        self.assertIsNone(self._text_json(result)["image_path"])
+        self.assertEqual(self._images(result), [])
+
+    def test_check_new_reports_skipped_links(self):
+        self._link("snap-20990109-000000-000.json", self.outside / "secret.json")
+        result = self._call("check_new_annotations").structured_content
+        self.assertEqual(result["total_in_inbox"], 2)
+        self.assertEqual(len(result["skipped"]), 1)
+
+    def test_clear_removes_links_but_not_targets(self):
+        self._link("snap-20990109-000000-000.json", self.outside / "secret.json")
+        self._link("snap-20990109-000000-000.png", self.outside / "secret.png")
+        self._link("snap-20990108-000000-000.json", self.outside / "gone.json")  # dangling
+        result = self._call("clear_inbox").structured_content
+        self.assertEqual(list(self.inbox.iterdir()), [])
+        self.assertTrue((self.outside / "secret.json").exists())
+        self.assertTrue((self.outside / "secret.png").exists())
+        self.assertEqual(len(result["removed_links"]), 3)
+        self.assertEqual(result["deleted_json"], 4)
+        self.assertEqual(result["deleted_png"], 3)
 
 
 if __name__ == "__main__":
