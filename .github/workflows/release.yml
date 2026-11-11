@@ -105,4 +105,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
+          # Tags like v0.2.0-rc.1 publish as prereleases, which the installers
+          # skip (they resolve /releases/latest), so testers can try a build first.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: dist/*
