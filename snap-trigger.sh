@@ -5,15 +5,15 @@
 # Resolve the repo from this script's own location so the checkout can live anywhere.
 SNAP_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 BINARY="$SNAP_DIR/app/src-tauri/target/release/snap"
-LOCK="/tmp/snap-overlay.lock"
+# Per-user lock, never in the shared /tmp: another account's lock (or a link
+# planted there) must not block or redirect this user's overlay. The app keeps
+# its raw captures in the private ~/.snap/captures and cleans them up itself.
+LOCK="$HOME/.snap/snap-overlay.lock"
 LOG="$HOME/.snap/snap.log"
-# The app writes its raw capture to a fixed path in the shared /tmp. On a machine
-# with several user accounts, a leftover file owned by another user makes the
-# capture fail with "permission denied", so clean it up before and after each run.
-CAPTURE="${TMPDIR:-/tmp}/snap-capture.png"
+
+mkdir -p "$HOME/.snap" && chmod 700 "$HOME/.snap"
 
 log() {
-    mkdir -p "$HOME/.snap"
     echo "[$(date -u '+%Y-%m-%d %H:%M:%S')] [trigger] $1" >> "$LOG"
 }
 
@@ -30,10 +30,6 @@ fi
 
 log "hotkey triggered — launching overlay"
 
-if [ -e "$CAPTURE" ] && ! rm -f "$CAPTURE" 2>/dev/null; then
-    log "WARNING: cannot remove $CAPTURE (owned by $(stat -c %U "$CAPTURE" 2>/dev/null)); capture will fail until that user removes it"
-fi
-
 # Launch the app in single-shot overlay mode
 # The app will capture screen, show overlay, save, and exit
 "$BINARY" --overlay-mode &
@@ -42,5 +38,5 @@ echo "$OVERLAY_PID" > "$LOCK"
 
 # Clean up lock when overlay exits
 wait "$OVERLAY_PID" 2>/dev/null
-rm -f "$LOCK" "$CAPTURE"
+rm -f "$LOCK"
 log "overlay closed"

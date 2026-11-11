@@ -332,8 +332,8 @@ This project uses Snap for visual annotations. Call `check_new_annotations()` at
 | `~/.snap/snap.log` | Event log (auto-rotates at 1MB, one backup at `snap.log.old`) |
 | `~/.snap/.last_read` | MCP server's read cursor (tracks which annotations are "new") |
 | `~/.snap/snap-tray.lock` | Keeps a second tray app from starting (tray mode only) |
-| `/tmp/snap-capture.png` | Temporary screen capture (in `$TMPDIR` if set; overwritten each time) |
-| `/tmp/snap-overlay.lock` | Lock file preventing concurrent overlays (Wayland trigger script) |
+| `~/.snap/captures/` | Raw screen captures while the overlay is open (owner-only; each removed when its overlay closes) |
+| `~/.snap/snap-overlay.lock` | Lock file preventing concurrent overlays (Wayland trigger script) |
 
 ---
 
@@ -430,7 +430,7 @@ claude mcp list
 ```bash
 # Kill it
 kill $(pgrep -f "target/release/snap")
-rm -f /tmp/snap-overlay.lock
+rm -f ~/.snap/snap-overlay.lock
 ```
 
 ### Log file growing too large

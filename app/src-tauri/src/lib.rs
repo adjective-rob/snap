@@ -11,19 +11,139 @@ pub static PRE_CAPTURED: AtomicBool = AtomicBool::new(false);
 
 // ----- Capture file path -----
 
-fn capture_temp_path() -> PathBuf {
-    std::env::temp_dir().join("snap-capture.png")
+/// The raw capture the current overlay is showing. Each capture gets its own
+/// file so concurrent or leftover captures can never be mixed up.
+static CURRENT_CAPTURE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Captures older than this are left over from a crash and are removed when
+/// the next capture starts.
+const STALE_CAPTURE_SECS: u64 = 10 * 60;
+
+/// `~/.snap`, created owner-only.
+fn snap_dir() -> Result<PathBuf, String> {
+    let dir = dirs::home_dir()
+        .ok_or("Could not determine home directory")?
+        .join(".snap");
+    create_private_dir(&dir)?;
+    Ok(dir)
+}
+
+/// Create `dir` if needed, refuse it if it is a symlink or not a directory,
+/// and make it owner-only (0700) on Unix. On Windows the user profile's ACLs
+/// already keep it private.
+fn create_private_dir(dir: &std::path::Path) -> Result<(), String> {
+    fs::create_dir_all(dir).map_err(|e| format!("Failed to create {}: {}", dir.display(), e))?;
+    let meta = fs::symlink_metadata(dir)
+        .map_err(|e| format!("Failed to inspect {}: {}", dir.display(), e))?;
+    if !meta.is_dir() {
+        return Err(format!("{} is not a plain directory", dir.display()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if meta.permissions().mode() & 0o077 != 0 {
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+                .map_err(|e| format!("Failed to restrict {}: {}", dir.display(), e))?;
+        }
+    }
+    Ok(())
+}
+
+/// Hard-to-guess token for capture names, without pulling in a RNG crate:
+/// std's RandomState is seeded from OS randomness.
+fn random_token() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u128(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+    );
+    hasher.write_u32(std::process::id());
+    format!("{:016x}", hasher.finish())
+}
+
+/// Pick a fresh path for a new capture in the private `~/.snap/captures`
+/// directory and make it the current capture. The previous capture of this
+/// process and stale ones from crashed runs are removed first. The file is not
+/// created here: the capture tools write it, and some of them will not
+/// overwrite an existing file. The directory is owner-only, so no other user
+/// can plant a file or link at this name.
+fn new_capture_path() -> Result<PathBuf, String> {
+    let dir = snap_dir()?.join("captures");
+    create_private_dir(&dir)?;
+    discard_capture();
+    prune_stale_captures(&dir);
+    let path = dir.join(format!("capture-{}-{}.png", std::process::id(), random_token()));
+    if let Ok(mut current) = CURRENT_CAPTURE.lock() {
+        *current = Some(path.clone());
+    }
+    Ok(path)
+}
+
+/// The capture the overlay is showing, if it exists as a regular file.
+fn current_capture() -> Result<PathBuf, String> {
+    let path = CURRENT_CAPTURE
+        .lock()
+        .ok()
+        .and_then(|c| c.clone())
+        .ok_or("No capture file found")?;
+    match fs::symlink_metadata(&path) {
+        Ok(meta) if meta.is_file() => Ok(path),
+        Ok(_) => Err("Capture is not a regular file".to_string()),
+        Err(_) => Err("No capture file found".to_string()),
+    }
+}
+
+/// Delete the current capture, if any. Called when the overlay closes and
+/// before a new capture starts.
+fn discard_capture() {
+    let taken = CURRENT_CAPTURE.lock().ok().and_then(|mut c| c.take());
+    if let Some(path) = taken {
+        let _ = fs::remove_file(path);
+    }
+}
+
+fn prune_stale_captures(dir: &std::path::Path) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map_or(false, |age| age.as_secs() > STALE_CAPTURE_SECS);
+        if stale {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Write a new file that must not exist yet (so a planted file or link at the
+/// name is never written through). Owner-only on Unix.
+fn write_new_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(path)?.write_all(bytes)
 }
 
 // ----- Screen Capture -----
 
 #[cfg(target_os = "macos")]
 pub fn capture_screen_interactive() -> Result<(), String> {
-    let path = capture_temp_path();
-    let _ = fs::remove_file(&path);
+    let path = new_capture_path()?;
 
     let output = Command::new("screencapture")
-        .args(["-i", "-s", path.to_str().unwrap_or("/tmp/snap-capture.png")])
+        .arg("-i")
+        .arg("-s")
+        .arg(&path)
         .output()
         .map_err(|e| format!("screencapture failed to launch: {}", e))?;
 
@@ -46,14 +166,11 @@ pub fn capture_screen_interactive() -> Result<(), String> {
 
 #[tauri::command]
 fn capture_screen() -> Result<String, String> {
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    let path = capture_temp_path();
-
     #[cfg(target_os = "windows")]
     {
         use screenshots::Screen;
 
-        let _ = fs::remove_file(&path);
+        let path = new_capture_path()?;
 
         let screens = Screen::all().map_err(|e| format!("Failed to list screens: {}", e))?;
 
@@ -83,13 +200,14 @@ fn capture_screen() -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
         if PRE_CAPTURED.swap(false, Ordering::SeqCst) {
-            return Ok(path.to_string_lossy().to_string());
+            return current_capture().map(|p| p.to_string_lossy().to_string());
         }
 
         // fallback: full-screen silent capture
-        let _ = fs::remove_file(&path);
+        let path = new_capture_path()?;
         let output = Command::new("screencapture")
-            .args(["-x", path.to_str().unwrap_or("/tmp/snap-capture.png")])
+            .arg("-x")
+            .arg(&path)
             .output()
             .map_err(|e| format!("screencapture failed to launch: {}", e))?;
 
@@ -147,10 +265,9 @@ pub fn start_precapture() {
 /// Linux: try capture tools in order of preference.
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn capture_screen_linux() -> Result<String, String> {
-    let path = capture_temp_path();
+    let path = new_capture_path()?;
     {
         let path_str = path.to_string_lossy().to_string();
-        let _ = fs::remove_file(&path);
 
         let methods: Vec<(&str, Vec<&str>)> = if std::env::var("WAYLAND_DISPLAY").is_ok() {
             vec![
@@ -679,16 +796,13 @@ fn save_annotation(metadata_json: String, image_base64: Option<String>) -> Resul
         let image_bytes = base64::engine::general_purpose::STANDARD
             .decode(&b64)
             .map_err(|e| format!("Base64 decode failed: {}", e))?;
-        fs::write(&png_path, &image_bytes).map_err(|e| format!("Failed to write PNG: {}", e))?;
+        write_new_file(&png_path, &image_bytes)
+            .map_err(|e| format!("Failed to write PNG: {}", e))?;
     } else {
         // Copy the raw screen capture — much faster, no IPC overhead
-        let capture = capture_temp_path();
-        if capture.exists() {
-            fs::copy(&capture, &png_path)
-                .map_err(|e| format!("Failed to copy capture: {}", e))?;
-        } else {
-            return Err("No capture file found".to_string());
-        }
+        let capture = current_capture()?;
+        let bytes = fs::read(&capture).map_err(|e| format!("Failed to read capture: {}", e))?;
+        write_new_file(&png_path, &bytes).map_err(|e| format!("Failed to copy capture: {}", e))?;
     }
 
     // Inject image filename into metadata
@@ -700,7 +814,7 @@ fn save_annotation(metadata_json: String, image_base64: Option<String>) -> Resul
         serde_json::to_string_pretty(&metadata).map_err(|e| format!("JSON serialize: {}", e))?;
 
     // Write JSON
-    fs::write(&json_path, &metadata_str)
+    write_new_file(&json_path, metadata_str.as_bytes())
         .map_err(|e| format!("Failed to write metadata: {}", e))?;
 
     log_event(&format!("Saved annotation: {}", png_name));
@@ -712,7 +826,7 @@ fn save_annotation(metadata_json: String, image_base64: Option<String>) -> Resul
 
 #[tauri::command]
 fn read_capture_base64() -> Result<String, String> {
-    let path = capture_temp_path();
+    let path = current_capture()?;
     let bytes = fs::read(&path).map_err(|e| format!("Failed to read capture: {}", e))?;
     Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }
@@ -722,6 +836,7 @@ fn read_capture_base64() -> Result<String, String> {
 #[tauri::command]
 fn mark_overlay_closed() {
     OVERLAY_ACTIVE.store(false, Ordering::SeqCst);
+    discard_capture();
     log_event("overlay closed");
 }
 
@@ -735,11 +850,8 @@ fn frontend_log(msg: String) {
 // ----- Helpers -----
 
 fn inbox_dir() -> Result<PathBuf, String> {
-    let dir = dirs::home_dir()
-        .ok_or("Could not determine home directory")?
-        .join(".snap")
-        .join("inbox");
-    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create inbox: {}", e))?;
+    let dir = snap_dir()?.join("inbox");
+    create_private_dir(&dir)?;
     Ok(dir)
 }
 
@@ -802,4 +914,76 @@ pub fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool {
         mark_overlay_closed,
         frontend_log,
     ]
+}
+
+#[cfg(test)]
+mod capture_file_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("snap-test-{}-{}", name, random_token()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn random_tokens_differ() {
+        assert_ne!(random_token(), random_token());
+    }
+
+    #[test]
+    fn write_new_file_refuses_existing_file() {
+        let dir = scratch("existing");
+        let path = dir.join("a.png");
+        write_new_file(&path, b"one").unwrap();
+        assert!(write_new_file(&path, b"two").is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"one");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_new_file_never_writes_through_a_link() {
+        let dir = scratch("link");
+        let target = dir.join("target");
+        fs::write(&target, b"keep").unwrap();
+        let link = dir.join("a.png");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(write_new_file(&link, b"overwrite").is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"keep");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_dir_is_owner_only_and_rejects_links() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("private");
+        let sub = dir.join("captures");
+        fs::create_dir(&sub).unwrap();
+        fs::set_permissions(&sub, fs::Permissions::from_mode(0o777)).unwrap();
+        create_private_dir(&sub).unwrap();
+        assert_eq!(fs::metadata(&sub).unwrap().permissions().mode() & 0o777, 0o700);
+
+        let link = dir.join("linked");
+        std::os::unix::fs::symlink(&sub, &link).unwrap();
+        assert!(create_private_dir(&link).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn stale_captures_are_pruned_fresh_ones_kept() {
+        let dir = scratch("prune");
+        let fresh = dir.join("fresh.png");
+        let stale = dir.join("stale.png");
+        fs::write(&fresh, b"x").unwrap();
+        fs::write(&stale, b"x").unwrap();
+        let old = std::time::SystemTime::now()
+            - std::time::Duration::from_secs(STALE_CAPTURE_SECS + 60);
+        fs::File::options().write(true).open(&stale).unwrap().set_modified(old).unwrap();
+        prune_stale_captures(&dir);
+        assert!(fresh.exists());
+        assert!(!stale.exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
 }
